@@ -11,6 +11,8 @@ iGitty ist ein Windows-first Desktop-Werkzeug fuer das gemeinsame Verwalten von 
 - Remote-GitHub-Repository-Ladelogik ueber die GitHub-REST-API mit Pagination
 - Checkbox-Tabelle fuer Remote-Repositories inklusive Filter und "Alle auswaehlen"
 - Lokale Repository-Erkennung mit Git-CLI-Statusdaten
+- Lokale Hauptliste ohne sichtbare Pfad-Spalte; der Pfad bleibt intern erhalten und ist per Tooltip verfuegbar
+- Public-Spalte in der lokalen Tabelle mit sauberer Unterscheidung zwischen `public`, `private`, `unknown` und `not_published`
 - Clone-Workflow mit sicherem Ueberspringen vorhandener Zielordner
 - Commit-Workflow mit Dialog fuer Nachricht und Stage-Modus
 - Push-Workflow mit optionaler Remote-Erstellung auf GitHub
@@ -67,6 +69,7 @@ python main.py
 - `igitty_jobs.db` enthaelt `jobs`, `clone_history` und `action_history`.
 - `repo_struct_vault.db` speichert baumartige Strukturknoten fuer den spaeteren RepoViewer.
 - Delete-Pruefungen verwenden Clone-Nachweise ueber `repo_name`, `remote_url` und `repo_id`.
+- Lokale Repositories speichern zusaetzlich `remote_visibility` sowie eine optionale lokale Push-Vorgabe `publish_as_public`.
 
 ## Bekannte Grenzen
 

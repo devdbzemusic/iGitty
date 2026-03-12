@@ -77,7 +77,7 @@ class MainController:
         commit_service = CommitService(git_service=git_service)
         push_service = PushService(git_service=git_service, github_service=github_service)
         delete_service = DeleteService(github_service=github_service)
-        local_repo_service = LocalRepoService(git_service=git_service)
+        local_repo_service = LocalRepoService(git_service=git_service, github_service=github_service)
         job_log_repository = JobLogRepository(paths.jobs_db_file)
         repo_struct_service = RepoStructService(self._repo_struct_repository)
         self._remote_repo_controller = RemoteRepoController(

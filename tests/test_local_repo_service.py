@@ -55,6 +55,29 @@ class DummyGitService:
         }
 
 
+class DummyGitHubService:
+    """Einfacher Test-Stub fuer die Sichtbarkeitsauflosung eines GitHub-Remotes."""
+
+    def resolve_remote_metadata(self, remote_url: str) -> tuple[str, int]:
+        """
+        Liefert fuer den Test eine feste Sichtbarkeit samt Repo-ID.
+
+        Eingabeparameter:
+        - remote_url: Im Test uebergebene Remote-URL.
+
+        Rueckgabewerte:
+        - Tupel aus Sichtbarkeit und Repository-ID.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Ermoeglicht gezielte Assertions auf die neue Public-/Visibility-Logik.
+        """
+
+        return "public", 42
+
+
 def test_scan_repositories_finds_git_folder(tmp_path: Path) -> None:
     """
     Prueft die Erkennung eines lokalen Repositories ueber einen `.git`-Ordner.
@@ -85,3 +108,34 @@ def test_scan_repositories_finds_git_folder(tmp_path: Path) -> None:
     assert repositories[0].current_branch == "main"
     assert repositories[0].has_remote is True
     assert repositories[0].language_guess == "Python"
+    assert repositories[0].remote_visibility == "unknown"
+
+
+def test_scan_repositories_sets_remote_visibility_when_github_metadata_exists(tmp_path: Path) -> None:
+    """
+    Prueft die Anreicherung lokaler Repositories mit GitHub-Sichtbarkeitsdaten.
+
+    Eingabeparameter:
+    - tmp_path: Temporäres Testverzeichnis von pytest.
+
+    Rueckgabewerte:
+    - Keine.
+
+    Moegliche Fehlerfaelle:
+    - AssertionError bei fehlender Visibility-Aufloesung.
+
+    Wichtige interne Logik:
+    - Kombiniert lokalen Scan mit einem GitHub-Metadaten-Stub fuer die Public-Spalte.
+    """
+
+    repo_root = tmp_path / "demo_repo"
+    (repo_root / ".git").mkdir(parents=True)
+    (repo_root / "main.py").write_text("print('demo')", encoding="utf-8")
+
+    service = LocalRepoService(git_service=DummyGitService(), github_service=DummyGitHubService())
+
+    repositories = service.scan_repositories(tmp_path)
+
+    assert repositories[0].remote_visibility == "public"
+    assert repositories[0].publish_as_public is True
+    assert repositories[0].remote_repo_id == 42

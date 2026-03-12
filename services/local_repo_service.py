@@ -6,12 +6,13 @@ from pathlib import Path
 
 from models.repo_models import LocalRepo
 from services.git_service import GitService
+from services.github_service import GitHubService
 
 
 class LocalRepoService:
     """Scannt Verzeichnisse rekursiv nach Git-Repositories und liest deren Status aus."""
 
-    def __init__(self, git_service: GitService) -> None:
+    def __init__(self, git_service: GitService, github_service: GitHubService | None = None) -> None:
         """
         Initialisiert den Service mit einer Git-Abhaengigkeit.
 
@@ -29,6 +30,8 @@ class LocalRepoService:
         """
 
         self._git_service = git_service
+        self._github_service = github_service
+        self._remote_metadata_cache: dict[str, tuple[str, int]] = {}
 
     def scan_repositories(self, root_path: Path) -> list[LocalRepo]:
         """
@@ -60,6 +63,7 @@ class LocalRepoService:
 
             repo_path = current_path
             details = self._git_service.get_repo_details(repo_path)
+            remote_visibility, remote_repo_id = self._resolve_remote_visibility(str(details["remote_url"]))
             repositories.append(
                 LocalRepo(
                     name=repo_path.name,
@@ -73,6 +77,9 @@ class LocalRepoService:
                     last_commit_hash=str(details["last_commit_hash"]),
                     last_commit_date=str(details["last_commit_date"]),
                     last_commit_message=str(details["last_commit_message"]),
+                    remote_visibility=remote_visibility,
+                    publish_as_public=(remote_visibility == "public"),
+                    remote_repo_id=remote_repo_id,
                     language_guess=self._guess_language(repo_path),
                 )
             )
@@ -121,3 +128,33 @@ class LocalRepoService:
         if not counts:
             return "-"
         return max(counts.items(), key=lambda item: item[1])[0]
+
+    def _resolve_remote_visibility(self, remote_url: str) -> tuple[str, int]:
+        """
+        Ermittelt die Remote-Sichtbarkeit eines lokalen Repositories.
+
+        Eingabeparameter:
+        - remote_url: Aktuelle `origin`-URL des lokalen Repositories.
+
+        Rueckgabewerte:
+        - Tupel aus Sichtbarkeit (`public`, `private`, `unknown`, `not_published`) und Repository-ID.
+
+        Moegliche Fehlerfaelle:
+        - GitHub-Abfragen koennen fehlschlagen und fallen dann auf `unknown` zurueck.
+
+        Wichtige interne Logik:
+        - Verwendet einen kleinen Cache, damit mehrere identische Remotes nicht doppelt aufgeloest werden.
+        """
+
+        if not remote_url:
+            return "not_published", 0
+        if remote_url in self._remote_metadata_cache:
+            return self._remote_metadata_cache[remote_url]
+        if self._github_service is None:
+            return "unknown", 0
+        try:
+            result = self._github_service.resolve_remote_metadata(remote_url)
+        except Exception:  # noqa: BLE001
+            result = ("unknown", 0)
+        self._remote_metadata_cache[remote_url] = result
+        return result

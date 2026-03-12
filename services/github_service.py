@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 
 import requests
 
@@ -165,6 +166,43 @@ class GitHubService:
             message = response.json().get("message", "Repository konnte nicht geloescht werden")
             raise GitHubApiError(f"GitHub API Fehler {response.status_code}: {message}")
 
+    def resolve_remote_metadata(self, remote_url: str) -> tuple[str, int]:
+        """
+        Ermittelt Sichtbarkeit und Repository-ID fuer eine bekannte GitHub-Remote-URL.
+
+        Eingabeparameter:
+        - remote_url: HTTPS- oder SSH-Remote eines GitHub-Repositories.
+
+        Rueckgabewerte:
+        - Tupel aus Sichtbarkeit (`public`, `private`, `unknown`) und Repository-ID.
+
+        Moegliche Fehlerfaelle:
+        - Fehlendes Access Token.
+        - Unerwartete API-Fehler.
+
+        Wichtige interne Logik:
+        - Nicht-GitHub-URLs werden defensiv als `unknown` behandelt.
+        """
+
+        owner_repo = self._parse_github_remote(remote_url)
+        if owner_repo is None:
+            return "unknown", 0
+
+        owner, name = owner_repo
+        self._ensure_authorization()
+        response = self._session.get(
+            f"https://api.github.com/repos/{owner}/{name}",
+            timeout=self._timeout_seconds,
+        )
+        if response.status_code >= 400:
+            return "unknown", 0
+
+        payload = response.json()
+        visibility = payload.get("visibility")
+        if not visibility:
+            visibility = "private" if payload.get("private") else "public"
+        return str(visibility), int(payload.get("id", 0))
+
     def _extract_rate_limit(self, response: requests.Response) -> RateLimitInfo:
         """
         Liest die relevanten Rate-Limit-Header aus einer GitHub-Antwort aus.
@@ -250,3 +288,30 @@ class GitHubService:
             contributors_count=None,
             updated_at=item.get("updated_at", ""),
         )
+
+    def _parse_github_remote(self, remote_url: str) -> tuple[str, str] | None:
+        """
+        Zerlegt eine GitHub-Remote-URL in Owner und Repository-Namen.
+
+        Eingabeparameter:
+        - remote_url: HTTPS- oder SSH-Remote eines GitHub-Repositories.
+
+        Rueckgabewerte:
+        - Tupel aus Owner und Repository-Name oder `None`, wenn keine GitHub-URL erkannt wurde.
+
+        Moegliche Fehlerfaelle:
+        - Keine; nicht passende URLs liefern `None`.
+
+        Wichtige interne Logik:
+        - Unterstuetzt die in Windows- und GitHub-Workflows typischen HTTPS- und SSH-Formate.
+        """
+
+        patterns = [
+            r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$",
+            r"^git@github\.com:(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$",
+        ]
+        for pattern in patterns:
+            match = re.match(pattern, remote_url.strip())
+            if match:
+                return match.group("owner"), match.group("repo")
+        return None

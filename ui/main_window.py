@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -66,7 +67,7 @@ class MainWindow(QMainWindow):
         )
         self._local_table = RepoTableWidget(
             title="Lokale Repositories",
-            columns=["Auswahl", "Name", "Pfad", "Branch", "Remote", "Aenderungen", "Letzter Commit"],
+            columns=["Auswahl", "Name", "Public", "Branch", "Remote", "Aenderungen", "Letzter Commit"],
         )
         self._path_selector = PathSelectorWidget()
         self._log_panel = LogPanelWidget()
@@ -233,7 +234,7 @@ class MainWindow(QMainWindow):
             [
                 "",
                 repo.name,
-                repo.full_path,
+                "",
                 repo.current_branch,
                 "Ja" if repo.has_remote else "Nein",
                 f"Ja ({repo.modified_count}+{repo.untracked_count})" if repo.has_changes else "Nein",
@@ -242,6 +243,10 @@ class MainWindow(QMainWindow):
             for repo in repositories
         ]
         self._local_table.populate_rows(rows)
+        for row_index, repo in enumerate(repositories):
+            name_item = self._build_local_name_item(repo)
+            self._local_table.set_item(row_index, 1, name_item)
+            self._local_table.set_cell_widget(row_index, 2, self._build_public_checkbox(repo))
         has_local = bool(repositories)
         self._commit_button.setEnabled(has_local)
         self._push_button.setEnabled(has_local)
@@ -592,3 +597,63 @@ class MainWindow(QMainWindow):
 
         if 0 <= row_index < len(self._local_repositories):
             self.local_repo_open_requested.emit(self._local_repositories[row_index].name, "local")
+
+    def _build_local_name_item(self, repository: LocalRepo):
+        """
+        Erzeugt das Name-Item fuer die lokale Tabelle inklusive Pfad-Tooltip.
+
+        Eingabeparameter:
+        - repository: Lokales Repository fuer die aktuelle Tabellenzeile.
+
+        Rueckgabewerte:
+        - Vollstaendig vorbereitetes QTableWidgetItem.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Der Pfad verschwindet aus der Hauptspalte, bleibt aber ueber Tooltip und Repo-Kontext sichtbar.
+        """
+
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        item = QTableWidgetItem(repository.name)
+        item.setToolTip(f"Lokaler Pfad: {repository.full_path}")
+        item.setStatusTip(repository.full_path)
+        return item
+
+    def _build_public_checkbox(self, repository: LocalRepo) -> QWidget:
+        """
+        Baut die Public-Anzeige fuer eine lokale Tabellenzeile auf.
+
+        Eingabeparameter:
+        - repository: Lokales Repository fuer die aktuelle Tabellenzeile.
+
+        Rueckgabewerte:
+        - QWidget mit Checkbox-Anzeige fuer die Public-Spalte.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Bereits veroeffentlichte Remotes werden nur angezeigt.
+        - Unveroeffentlichte Repositories koennen eine lokale Push-Vorgabe setzen.
+        """
+
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        checkbox = QCheckBox()
+        checkbox.setChecked(repository.remote_visibility == "public" or repository.publish_as_public)
+        checkbox.setToolTip(
+            "Remote-Sichtbarkeit: "
+            f"{repository.remote_visibility}"
+            if repository.has_remote
+            else "Lokale Vorgabe fuer spaeteren Push: public an/aus"
+        )
+        checkbox.setEnabled(not repository.has_remote)
+        if not repository.has_remote:
+            checkbox.toggled.connect(lambda checked, repo=repository: setattr(repo, "publish_as_public", checked))
+        layout.addWidget(checkbox)
+        return container

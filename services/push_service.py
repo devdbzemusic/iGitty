@@ -73,7 +73,7 @@ class PushService:
                         raise RuntimeError("Kein Remote vorhanden und Remote-Erstellung deaktiviert.")
                     remote_repo = self._github_service.create_repository(
                         name=repository.name,
-                        private=remote_private,
+                        private=remote_private if not repository.publish_as_public else False,
                         description=description,
                     )
                     remote_url = remote_repo.clone_url

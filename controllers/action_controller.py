@@ -87,7 +87,11 @@ class ActionController:
         remote_private = False
         description = ""
         if create_remote:
-            dialog = CreateRemoteDialog(repositories[0].name, self._window)
+            dialog = CreateRemoteDialog(
+                repositories[0].name,
+                initial_private=not repositories[0].publish_as_public,
+                parent=self._window,
+            )
             if dialog.exec() == 0:
                 return
             remote_private, description = dialog.get_values()

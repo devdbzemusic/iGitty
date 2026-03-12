@@ -238,3 +238,45 @@ class RepoTableWidget(QGroupBox):
         """
 
         self.row_activated.emit(item.row())
+
+    def set_item(self, row_index: int, column_index: int, item: QTableWidgetItem) -> None:
+        """
+        Setzt ein einzelnes Tabellenitem gezielt in der internen Qt-Tabelle.
+
+        Eingabeparameter:
+        - row_index: Zielzeile.
+        - column_index: Zielspalte.
+        - item: Vollstaendig vorbereitetes Tabellenitem.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Zeilen- oder Spaltenindizes werden von Qt ignoriert.
+
+        Wichtige interne Logik:
+        - Ermoeglicht spezialisierte Zelltypen, ohne das gesamte Widget fachlich zu spezialisieren.
+        """
+
+        self._table.setItem(row_index, column_index, item)
+
+    def set_cell_widget(self, row_index: int, column_index: int, widget: QWidget) -> None:
+        """
+        Setzt ein QWidget als Zellinhalt in der internen Tabelle.
+
+        Eingabeparameter:
+        - row_index: Zielzeile.
+        - column_index: Zielspalte.
+        - widget: Darzustellendes Zell-Widget.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Indizes werden von Qt ignoriert.
+
+        Wichtige interne Logik:
+        - Wird fuer Anzeige-Checkboxen ohne Aenderung der generischen Tabellenlogik genutzt.
+        """
+
+        self._table.setCellWidget(row_index, column_index, widget)

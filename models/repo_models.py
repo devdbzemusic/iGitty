@@ -51,4 +51,7 @@ class LocalRepo:
     last_commit_hash: str
     last_commit_date: str
     last_commit_message: str
+    remote_visibility: str = "not_published"
+    publish_as_public: bool = False
+    remote_repo_id: int = 0
     language_guess: str = "-"

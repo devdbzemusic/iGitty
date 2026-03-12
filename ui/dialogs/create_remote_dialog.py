@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QLabel, QLin
 class CreateRemoteDialog(QDialog):
     """Fragt Sichtbarkeit und Beschreibung fuer neue Remotes ab."""
 
-    def __init__(self, repo_name: str, parent=None) -> None:
+    def __init__(self, repo_name: str, initial_private: bool = False, parent=None) -> None:
         """
         Baut den Dialog mit vorausgefuelltem Repository-Namen auf.
 
@@ -33,6 +33,7 @@ class CreateRemoteDialog(QDialog):
         self._name_edit = QLineEdit(repo_name)
         self._name_edit.setReadOnly(True)
         self._private_checkbox = QCheckBox("Privates Repository erstellen")
+        self._private_checkbox.setChecked(initial_private)
         self._description_edit = QLineEdit()
         self._description_edit.setPlaceholderText("Optionale Beschreibung")
         layout.addWidget(self._name_edit)
