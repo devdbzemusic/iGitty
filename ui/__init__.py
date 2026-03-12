@@ -1,0 +1,1 @@
+"""Benutzeroberflaeche fuer iGitty."""

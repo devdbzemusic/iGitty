@@ -1,0 +1,1 @@
+"""Datamodelle fuer iGitty."""

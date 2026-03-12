@@ -1,0 +1,340 @@
+Du entwickelst eine Windows-first Desktop-App mit Python 3.12 + PySide6 namens:
+
+iGitty
+Remote + Local GitHub Repository Manager
+Teil 1 = MVP bis vor dem RepoViewer
+
+Ziel:
+Baue einen robusten, erweiterbaren MVP für ein zweispaltiges GitHub-/Git-Arbeitswerkzeug im Stil eines reduzierten Total Commander, aber ohne Menüleiste. Fokus: sichere Inventarisierung, Auswahl, Klonen, lokale Repo-Erkennung, Commit/Pull/Push-Vorbereitung, Upload neuer lokaler Repositories zu GitHub und revisionsfähige Protokollierung in SQLite.
+
+Wichtige Produktidee:
+iGitty soll sowohl Remote-GitHub-Repositories als auch lokale Git-Repositories verwalten können.
+Alle kritischen Aktionen müssen nachvollziehbar, protokolliert und so weit wie möglich reversibel vorbereitet sein.
+Online-Löschen darf nur erlaubt sein, wenn das betreffende Remote-Repo vorher lokal erfolgreich geklont wurde und dies in der SQLite-JobLog-Datenbank nachweisbar ist.
+
+Technik-Vorgaben:
+- Python 3.12
+- PySide6
+- requests für GitHub REST API
+- subprocess für git CLI
+- sqlite3 für lokale Datenbanken
+- pathlib statt roher Stringpfade
+- saubere Architektur mit klarer Trennung:
+  - app.py / ui/*
+  - core/*
+  - services/*
+  - models/*
+  - db/*
+- keine GUI-Logik in Core-Services
+- alle langen Operationen im Hintergrundthread
+- UI darf nie einfrieren
+- Code komplett sauber, modular, testbar, deutsch dokumentiert
+- jede Funktion mit Docstring in Deutsch:
+  - Zweck
+  - Eingabeparameter
+  - Rückgabewerte
+  - mögliche Fehlerfälle
+  - wichtige interne Logik
+
+Umgebungsvariablen:
+- GITHUB_ACCESS_TOKEN
+- GITHUBAPP_CLIENT_ID
+- IGITTY_REPO_DIR
+
+WICHTIG:
+- Token und Client ID niemals im Log oder UI unmaskiert anzeigen
+- Secrets in Logs immer maskieren
+- PAT bevorzugt aus EnvVars lesen, aber manuelle Eingabe optional unterstützen
+- Standard-Repo-Zielordner aus IGITTY_REPO_DIR laden
+- zusätzlich Ordnerdialog für beliebige Ordner
+
+MVP-Funktionsumfang Teil 1:
+
+1. Remote-Repositories laden
+- GitHub-Repositories des Accounts passend zum PAT abrufen
+- alle Seiten per Pagination laden
+- pro Repo mindestens erfassen:
+  - id
+  - name
+  - full_name
+  - owner
+  - private/public
+  - default_branch
+  - clone_url
+  - ssh_url wenn vorhanden
+  - html_url
+  - description
+  - topics
+  - language / languages
+  - contributors_count oder contributors-Liste wenn praktikabel
+  - archived
+  - fork
+  - created_at
+  - updated_at
+  - pushed_at
+  - size
+- Remote-Liste mit Checkbox-Spalte anzeigen
+- oberhalb der Checkbox-Spalte globale Funktion „Alle auswählen“
+- Remote-Liste scrollbar
+- Filterfeld für Name/Owner/Language
+- Mehrfachauswahl muss möglich sein
+
+2. Lokale Repositories erkennen
+- IGITTY_REPO_DIR oder beliebigen gewählten Ordner rekursiv auf Git-Repositories untersuchen
+- Erkennung über .git-Ordner
+- lokale Repositories in zweiter Liste anzeigen
+- pro lokalem Repo mindestens erfassen:
+  - Ordnername
+  - voller Pfad
+  - aktueller Branch
+  - Remote vorhanden ja/nein
+  - Remote URL
+  - Änderungen vorhanden ja/nein
+  - untracked files count
+  - modified files count
+  - letzter Commit Hash kurz
+  - letzter Commit Timestamp
+  - letzter Commit Message
+  - falls möglich: Languages grob aus Dateiendungen schätzen
+- Lokale Liste ebenfalls mit Checkboxen und Scrollbar
+
+3. Hauptfenster / Layout
+- funktional und optisch angelehnt an Total Commander
+- keine klassische Menüleiste
+- stattdessen:
+  - Header/Toolbar oben
+  - linke Pane = Remote GitHub Repositories
+  - rechte Pane = Lokale Repositories
+  - unten oder seitlich Log/Statusbereich
+- alle UI-Komponenten autoskalierend
+- Tabellen/Listen mit Scrollbars
+- Spaltenbreite sinnvoll anpassbar
+- dunkler, futuristischer DBZS-/SciFi-/Neon-Stil, aber funktional
+- keine übertriebene Spielerei, Priorität = Übersicht + Geschwindigkeit
+
+4. Clone-Funktion
+- ausgewählte Remote-Repositories in IGITTY_REPO_DIR oder gewählten Ordner klonen
+- pro Repo Zielpfad prüfen
+- Konflikte sauber behandeln:
+  - überspringen
+  - überschreiben nur nach expliziter Bestätigung
+- Clone-Vorgang mit Fortschritts-/Statuslog
+- Ergebnis in SQLite-JobLog protokollieren
+
+5. Lokale Commits vorbereiten
+- ausgewählte lokale Repositories committen können
+- Commit-Dialog:
+  - Commit Message
+  - optional „alle Änderungen stagen“
+  - optional nur tracked files
+- pro Commit alles in SQLite protokollieren:
+  - Repo
+  - Zeit
+  - Branch
+  - Commit Message
+  - Ergebnis
+  - Fehlertext falls vorhanden
+
+6. Push / Upload zu GitHub
+- ausgewählte lokale Repositories auf GitHub pushen
+- wenn noch kein Remote-Repo existiert:
+  - neues GitHub-Repo erstellen können
+  - Auswahl Public / Private
+  - Beschreibung optional
+  - danach remote origin setzen und pushen
+- wenn Remote existiert:
+  - normal pushen
+- alle Vorgänge in SQLite protokollieren
+
+7. Online-Löschen mit Sicherheitslogik
+- Remote-Repo-Löschen nur dann erlauben, wenn:
+  - Repo lokal erfolgreich geklont wurde
+  - der Clone-Vorgang in JobLog DB vorhanden ist
+- vor Löschung mehrstufige Absicherung:
+  - Bestätigungsdialog
+  - Eingabe eines Bestätigungstextes, z. B. LOESCHEN
+  - Hinweis, wo das lokale Backup liegt
+- Löschvorgang in JobLog DB protokollieren
+- ohne lokalen Clone-Nachweis muss Button deaktiviert oder Aktion verweigert werden
+
+8. SQLite-Datenbanken
+Erzeuge mindestens diese Datenbanken:
+
+A) igitty_jobs.db
+Tabellenvorschlag:
+- jobs
+- job_steps
+- repo_snapshots
+- commit_history
+- push_history
+- delete_history
+
+B) repo_struct_vault.db
+Ziel:
+- speichert baumartige Ordner- und Dateistruktur lokaler und optional auch geklonter Repositories
+- inklusive Basis-Versionsinformationen
+
+Mindestens speichern:
+- repo_identifier
+- source_type (local/remote_clone)
+- root_path
+- relative_path
+- item_type (dir/file)
+- size
+- extension
+- last_modified
+- git_status falls ermittelbar
+- last_commit_hash falls ermittelbar
+- version_scan_timestamp
+
+Wichtig:
+Diese Struktur wird in Teil 2 für RepoViewer verwendet.
+Für MVP Teil 1 reicht:
+- Struktur scanbar machen
+- in DB speichern
+- noch kein vollständiger Viewer nötig
+
+9. Doppelklick-Vorbereitung für Teil 2
+- Architektur so vorbereiten, dass Doppelklick auf ein Repo aus Remote- oder Local-Liste später den RepoViewer öffnen kann
+- für Teil 1 genügt:
+  - Stub / Platzhalter-Signal
+  - zentrale Methode open_repo_context(repo_ref, source_type)
+
+10. Logging
+- zentraler Logger für UI + SQLite
+- jede Aktion bekommt:
+  - job_id
+  - timestamp
+  - action_type
+  - source_type
+  - repo_name
+  - repo_owner
+  - local_path
+  - remote_url
+  - status
+  - message
+  - reversible_flag
+- Secrets maskieren
+- Logs sowohl menschenlesbar im UI als auch strukturiert in SQLite
+
+11. GitHub API
+- nutze GitHub REST API
+- Pagination korrekt behandeln
+- Rate-Limit-Informationen erfassen und im Statusbereich anzeigen
+- Fehlertexte von GitHub sauber extrahieren
+- kein Token in URLs loggen
+
+12. Git-CLI
+- verwende git über subprocess
+- prüfe beim Start, ob git verfügbar ist
+- zeige brauchbare Fehlermeldungen, wenn git fehlt
+- stdout/stderr sauber abfangen und maskieren
+
+13. UX-Anforderungen
+- keine blockierende UI
+- klare Statusmeldungen
+- sichere Defaults
+- destructive actions optisch deutlich markieren
+- Checkbox-Handling stabil
+- „Alle auswählen“ pro Liste
+- Refresh-Buttons für Remote und Local
+- Such-/Filterfunktion pro Liste
+- Statusleiste mit:
+  - GitHub Login-Status
+  - Anzahl Remote-Repos
+  - Anzahl lokaler Repos
+  - Rate Limit
+  - aktueller Zielordner
+
+14. Qualitätsanforderungen
+- kein monolithisches Einzeldatei-Chaos
+- baue einen sauberen MVP, der später RepoViewer Teil 2 aufnehmen kann
+- schreibe vollständige, produktionsnahe Dateistruktur
+- liefere funktionsfähigen Code, keine Pseudologik
+- baue defensive Fehlerbehandlung ein
+- wenn etwas für MVP zu groß ist, kapsle es sauber und markiere es mit TODO-MVP2
+
+Erwartete Ausgabe:
+1. Vollständige Projektstruktur
+2. Alle benötigten Python-Dateien
+3. requirements.txt
+4. README.md mit:
+   - Zweck
+   - Features MVP Teil 1
+   - EnvVars
+   - Startanleitung
+   - bekannte Grenzen
+5. SQLite-Initialisierung
+6. Beispielhafte DB-Schemata
+7. saubere Trennung zwischen UI, Core, Services, DB, Models
+8. startbare Anwendung
+
+Orientiere dich architektonisch an einer sauberen Trennung von GUI und Kernlogik.
+Die App soll erweiterbar sein und technisch ordentlich wirken, nicht wie schnell zusammengetackerter Bastelkram.
+
+Zusätzliche Architekturregeln:
+- Keine Businesslogik direkt in QWidget-, QDialog- oder MainWindow-Klassen
+- Alle GitHub- und Git-Operationen müssen über Services laufen
+- Alle langsamen Aktionen ausschließlich über Worker/Threads
+- SQLite-Zugriffe über Repository-Klassen kapseln
+- UI erhält nur bereits aufbereitete Datenmodelle
+- Jede Aktion erzeugt einen Job-Eintrag mit job_id
+- Destruktive Aktionen niemals direkt ohne Vorprüfung auslösen
+- RepoViewer noch nicht bauen, aber Hook vorbereiten
+- Doppelklick auf Tabellenzeilen soll zentral über Controller behandelt werden
+
+Erstelle zuerst nur MVP Teil 1.
+Nicht in RepoViewer Teil 2 abschweifen.
+
+Wichtigste Prioritäten:
+1. Stabilität
+2. Nachvollziehbarkeit per SQLite-Logging
+3. Sichere Clone-/Commit-/Push-/Delete-Abläufe
+4. Erweiterbare Architektur
+5. Gute Bedienbarkeit im 2-Pane-Layout
+
+Baue die App so, dass spätere Erweiterungen leicht möglich sind:
+- RepoViewer
+- Dateibaumansicht
+- Diff-Ansichten
+- Branch-Management
+- Pull / Fetch / Merge
+- Webhook-/Job-Automation
+- Repo-Metadaten-Vault
+
+Setze zuerst nur das Projektgerüst und den startbaren UI-Rahmen um:
+- vollständige Ordnerstruktur
+- requirements.txt
+- README.md
+- App-Start
+- MainWindow mit 2-Pane-Layout
+- Platzhalter-Toolbar
+- Statusbar
+- Logpanel
+- Laden der EnvVars
+- Initialisierung der SQLite-Datenbanken
+- Theme/QSS
+- noch keine GitHub- oder Git-Aktionen implementieren, nur vorbereiten
+
+Implementiere jetzt die Remote-GitHub-Ladelogik mit:
+- GitHub REST API
+- Pagination
+- Remote Repo Model
+- Anzeige in linker Tabelle
+- Checkbox-Spalte
+- Alle-auswählen-Funktion
+- Filterfeld
+- Statusanzeige für Anzahl und Rate Limit
+
+Nutze folgende Zielstruktur für iGitty MVP Teil 1:
+- ui/, core/, services/, db/, models/, controllers/, assets/, data/, logs/, docs/, tests/
+- MainWindow im 2-Pane-Stil wie Total Commander ohne Menüleiste
+- linke Liste = Remote GitHub Repositories
+- rechte Liste = lokale Git-Repositories
+- zentrale Controller verbinden UI und Services
+- GitHub-API strikt in github_service.py
+- git CLI strikt in git_service.py
+- SQLite strikt über db/* kapseln
+- alle langen Aktionen in ui/workers/*
+- RepoViewer noch nicht implementieren, aber Hook open_repo_context(repo_ref, source_type) vorbereiten
+- Ziel: saubere, erweiterbare MVP-Architektur statt Monolith

@@ -1,0 +1,331 @@
+Zweck der wichtigsten Bereiche
+app.py / main.py
+
+main.py startet die Anwendung.
+
+app.py initialisiert Theme, App-Kontext, DB, Controller, MainWindow.
+
+Sauber getrennt, damit der Einstieg nicht wie ein Werkzeugkasten nach einem Erdbeben aussieht.
+
+ui/
+
+Alles, was sichtbar ist.
+
+main_window.py
+Hauptfenster im 2-Pane-Stil:
+
+links: Remote-Repos
+
+rechts: Lokale Repos
+
+oben: Toolbar/Header
+
+unten: Status + Log
+
+dialogs/
+Für Commit, Repo anlegen, Delete-Bestätigung, Ordnerwahl.
+
+widgets/
+Wiederverwendbare UI-Bausteine:
+
+Repo-Tabelle
+
+Filterleiste
+
+Statusanzeige
+
+Logpanel
+
+Pfadwahl
+
+workers/Hintergrundjobs für alles Langsame:
+
+GitHub laden
+
+lokale Repos scannen
+
+klonen
+
+committen
+
+pushen
+
+löschen
+
+Struktur scannen
+
+core/
+
+Das Fundament.
+
+config.py
+zentrale Konfiguration, Defaults, Konstanten
+
+env.py
+liest GITHUB_ACCESS_TOKEN, GITHUBAPP_CLIENT_ID, IGITTY_REPO_DIR
+
+paths.py
+erzeugt/verwaltert Daten-, Log-, DB- und Asset-Pfade
+
+logger.py
+File-Logging + UI-Logging + SQLite-Hooks
+
+masking.py
+maskiert Tokens und sensible Inhalte
+
+app_state.py
+hält Status wie aktueller Zielordner, eingeloggter User, Rate Limit, letzte Scans
+
+models/
+
+Datenträger für den ganzen Laden.
+
+repo_models.py
+Remote- und Local-Repo-Datenklassen
+
+job_models.py
+Job, JobStep, ActionResult
+
+struct_models.py
+Dateibaum-/Strukturmodelle für repo_struct_vault.db
+
+view_models.py
+Tabellenzeilen und UI-nahe Modelldarstellung
+
+services/
+
+Hier passiert die eigentliche Arbeit.
+
+github_service.py
+GitHub REST API, Pagination, Repo laden, Repo erstellen, Repo löschen
+
+git_service.py
+git CLI über subprocess, Branch, Status, Commit, Push, Remote prüfen
+
+local_repo_service.py
+scannt Verzeichnisse rekursiv auf .git
+
+clone_service.py
+orchestriert Clone-Abläufe
+
+commit_service.py
+führt Commit-Abläufe aus
+
+push_service.py
+erstellt Remote wenn nötig, setzt Origin, pusht
+
+delete_service.py
+prüft Clone-Nachweis und löscht dann erst Remote-Repo
+
+repo_struct_service.py
+scannt Dateibäume und speichert sie in repo_struct_vault.db
+
+metadata_service.py
+sammelt Zusatzinfos wie Language-Schätzung, Contributor-Mapping, Repo-Metadaten
+
+db/
+
+SQLite sauber kapseln, nicht überall wild SQL-Fetzen reinschmeißen.
+
+sqlite_manager.py
+Verbindungsverwaltung
+
+init_db.py
+DB initialisieren
+
+job_log_repository.py
+CRUD für igitty_jobs.db
+
+repo_struct_repository.py
+CRUD für repo_struct_vault.db
+
+migrations.py
+einfache Schema-Upgrades für spätere Versionen
+
+controllers/
+
+Verbindet UI und Services.
+
+main_controller.py
+initialisiert Fensterzustände und übergreifende Aktionen
+
+remote_repo_controller.py
+Remote-Liste laden, filtern, markieren, klonen, löschen
+
+local_repo_controller.py
+lokale Repos scannen, filtern, committen, pushen
+
+action_controller.py
+gemeinsame Jobsteuerung, Worker-Start, Statusupdates
+
+Empfohlene Hauptfenster-Struktur
+Oben
+
+Toolbar/Header mit:
+
+Remote laden
+
+Lokale Repos scannen
+
+Zielordner wählen
+
+Klonen
+
+Commit
+
+Push
+
+Löschen
+
+Struktur scannen
+
+Suchfelder / Filter
+
+Mitte
+
+Zwei große Tabellen nebeneinander:
+
+Links: Remote Repositories
+
+Spaltenvorschlag:
+
+Checkbox
+
+Name
+
+Owner
+
+Sichtbarkeit
+
+Default Branch
+
+Language
+
+Contributors
+
+Updated
+
+Archived
+
+Clone Status lokal ja/nein
+
+Rechts: Lokale Repositories
+
+Spaltenvorschlag:
+
+Checkbox
+
+Name
+
+Pfad
+
+Branch
+
+Remote ja/nein
+
+Änderungen ja/nein
+
+Untracked
+
+Modified
+
+Last Commit
+
+Last Commit Date
+
+Unten
+
+Statusbar
+
+Logpanel
+
+Fortschritt aktiver Jobs
+
+Datenbanken – pragmatischer Start
+igitty_jobs.db
+Tabellen
+
+jobs
+
+job_steps
+
+repo_snapshots
+
+commit_history
+
+push_history
+
+delete_history
+
+repo_struct_vault.db
+Tabellen
+
+repo_roots
+
+repo_tree_items
+
+repo_versions
+
+scan_sessions
+
+Damit ist Teil 2 schon vorbereitet, ohne dass du jetzt schon den RepoViewer voll ausmodellieren musst.
+
+Was Codex konkret zuerst bauen soll
+
+Die richtige Reihenfolge ist entscheidend. Sonst baut er dir die Dachrinne, bevor das Haus steht.
+
+Phase 1
+
+Projektstruktur
+
+requirements
+
+README
+
+App-Start
+
+MainWindow
+
+Theme / QSS
+
+EnvVars lesen
+
+DB init
+
+Phase 2
+
+GitHub-Service
+
+Remote-Repos laden
+
+Remote-Tabelle mit Checkboxen und Filter
+
+Phase 3
+
+lokale Repo-Erkennung
+
+Local-Tabelle mit Checkboxen und Filter
+
+Phase 4
+
+Clone-Funktion
+
+SQLite JobLog
+
+Phase 5
+
+Commit-Funktion
+
+Push-Funktion
+
+Remote neu anlegen
+
+Phase 6
+
+Struktur-Scan
+
+repo_struct_vault.db
+
+Phase 7
+
+Sicherheitslogik für Online-Löschen

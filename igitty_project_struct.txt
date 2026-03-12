@@ -1,0 +1,93 @@
+iGitty/
+├─ app.py
+├─ main.py
+├─ requirements.txt
+├─ README.md
+├─ .env.example
+├─ assets/
+│  ├─ icons/
+│  ├─ branding/
+│  └─ styles/
+│     └─ neon_dark.qss
+├─ data/
+│  ├─ igitty_jobs.db
+│  └─ repo_struct_vault.db
+├─ logs/
+│  └─ igitty.log
+├─ ui/
+│  ├─ __init__.py
+│  ├─ main_window.py
+│  ├─ dialogs/
+│  │  ├─ __init__.py
+│  │  ├─ commit_dialog.py
+│  │  ├─ create_remote_dialog.py
+│  │  ├─ delete_confirm_dialog.py
+│  │  └─ folder_picker_dialog.py
+│  ├─ widgets/
+│  │  ├─ __init__.py
+│  │  ├─ repo_table_widget.py
+│  │  ├─ status_bar_widget.py
+│  │  ├─ filter_bar_widget.py
+│  │  ├─ log_panel_widget.py
+│  │  └─ path_selector_widget.py
+│  └─ workers/
+│     ├─ __init__.py
+│     ├─ base_worker.py
+│     ├─ github_load_worker.py
+│     ├─ local_scan_worker.py
+│     ├─ clone_worker.py
+│     ├─ commit_worker.py
+│     ├─ push_worker.py
+│     ├─ delete_worker.py
+│     └─ struct_scan_worker.py
+├─ core/
+│  ├─ __init__.py
+│  ├─ config.py
+│  ├─ env.py
+│  ├─ exceptions.py
+│  ├─ paths.py
+│  ├─ logger.py
+│  ├─ utils.py
+│  ├─ masking.py
+│  └─ app_state.py
+├─ models/
+│  ├─ __init__.py
+│  ├─ repo_models.py
+│  ├─ job_models.py
+│  ├─ struct_models.py
+│  └─ view_models.py
+├─ services/
+│  ├─ __init__.py
+│  ├─ github_service.py
+│  ├─ git_service.py
+│  ├─ local_repo_service.py
+│  ├─ clone_service.py
+│  ├─ commit_service.py
+│  ├─ push_service.py
+│  ├─ delete_service.py
+│  ├─ repo_struct_service.py
+│  └─ metadata_service.py
+├─ db/
+│  ├─ __init__.py
+│  ├─ sqlite_manager.py
+│  ├─ init_db.py
+│  ├─ job_log_repository.py
+│  ├─ repo_struct_repository.py
+│  └─ migrations.py
+├─ controllers/
+│  ├─ __init__.py
+│  ├─ main_controller.py
+│  ├─ remote_repo_controller.py
+│  ├─ local_repo_controller.py
+│  └─ action_controller.py
+├─ tests/
+│  ├─ __init__.py
+│  ├─ test_github_service.py
+│  ├─ test_git_service.py
+│  ├─ test_local_repo_service.py
+│  ├─ test_job_log_repository.py
+│  └─ test_repo_struct_service.py
+└─ docs/
+   ├─ architecture.md
+   ├─ db_schema.md
+   └─ roadmap_mvp1_mvp2.md

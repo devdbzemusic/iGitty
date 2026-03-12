@@ -1,0 +1,15 @@
+Baue eine Windows-first PySide6 Desktop-App namens iGitty als MVP Teil 1 eines Remote+Local GitHub Repository Managers.
+
+Kernfunktionen:
+- GitHub-Repositories per PAT laden und mit Checkboxen listen
+- lokale Git-Repositories aus IGITTY_REPO_DIR oder Dialogordner rekursiv erkennen und listen
+- zweispaltige Total-Commander-artige UI ohne Menüleiste
+- ausgewählte Remote-Repos lokal klonen
+- ausgewählte lokale Repos committen und auf GitHub pushen
+- falls lokal noch kein GitHub-Repo existiert: neues Remote-Repo anlegen (Public/Private) und hochschieben
+- Remote-Löschen nur erlauben, wenn Repo vorher lokal erfolgreich geklont und in SQLite-JobLog nachweisbar ist
+- alle Aktionen inklusive Commit/Push/Delete/Clone in SQLite protokollieren
+- zusätzliche SQLite repo_struct_vault.db für baumartige Repo-Struktur und Versionsbasisdaten vorbereiten
+- Architektur strikt trennen: UI, Core, Services, Models, DB
+- UI autoskalierend, scrollbare Listen, Suchfilter, Hintergrundthreads, Neon-SciFi-Look, aber funktional
+- komplette startbare Projektstruktur mit README, requirements, DB-Init und sauber dokumentiertem Code

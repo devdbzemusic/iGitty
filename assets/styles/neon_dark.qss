@@ -1,0 +1,63 @@
+QWidget {
+    background-color: #10161f;
+    color: #d7e7f5;
+    font-family: "Segoe UI";
+    font-size: 10pt;
+}
+
+QMainWindow {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #0d141d, stop:1 #162431);
+}
+
+QGroupBox {
+    border: 1px solid #27445e;
+    border-radius: 8px;
+    margin-top: 10px;
+    padding-top: 10px;
+    font-weight: 600;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 4px 0 4px;
+    color: #72d6ff;
+}
+
+QPushButton {
+    background-color: #18344a;
+    border: 1px solid #2f6186;
+    border-radius: 6px;
+    padding: 6px 12px;
+}
+
+QPushButton:hover {
+    background-color: #214863;
+}
+
+QPushButton:disabled {
+    color: #748596;
+    background-color: #1a2128;
+    border-color: #313942;
+}
+
+QLineEdit, QPlainTextEdit, QTableWidget {
+    background-color: #0c131a;
+    border: 1px solid #27445e;
+    border-radius: 6px;
+    selection-background-color: #1f8ad1;
+}
+
+QHeaderView::section {
+    background-color: #173145;
+    color: #cfeeff;
+    padding: 6px;
+    border: none;
+    border-right: 1px solid #27445e;
+}
+
+QStatusBar {
+    background-color: #0f1a22;
+    border-top: 1px solid #27445e;
+}
