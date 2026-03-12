@@ -50,3 +50,24 @@ class LogPanelWidget(QPlainTextEdit):
 
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.appendPlainText(f"[{timestamp}] {message}")
+
+    def set_messages(self, messages: list[str], empty_message: str = "Keine Eintraege vorhanden.") -> None:
+        """
+        Ersetzt den aktuellen Inhalt des Panels durch eine vorbereitete Nachrichtenliste.
+
+        Eingabeparameter:
+        - messages: Vollstaendig aufbereitete Textzeilen fuer die Anzeige.
+        - empty_message: Platzhaltertext fuer leere Listen.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Methode wird fuer Diagnosebereiche genutzt, in denen keine laufende Append-Logik,
+          sondern eine kompakte Momentaufnahme angezeigt werden soll.
+        """
+
+        self.setPlainText("\n".join(messages) if messages else empty_message)

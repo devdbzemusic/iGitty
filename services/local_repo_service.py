@@ -5,14 +5,21 @@ from __future__ import annotations
 from pathlib import Path
 
 from models.repo_models import LocalRepo
+from models.state_models import RepositoryState
 from services.git_service import GitService
 from services.github_service import GitHubService
+from services.repo_index_service import RepoIndexService
 
 
 class LocalRepoService:
     """Scannt Verzeichnisse rekursiv nach Git-Repositories und liest deren Status aus."""
 
-    def __init__(self, git_service: GitService, github_service: GitHubService | None = None) -> None:
+    def __init__(
+        self,
+        git_service: GitService,
+        github_service: GitHubService | None = None,
+        repo_index_service: RepoIndexService | None = None,
+    ) -> None:
         """
         Initialisiert den Service mit einer Git-Abhaengigkeit.
 
@@ -31,6 +38,7 @@ class LocalRepoService:
 
         self._git_service = git_service
         self._github_service = github_service
+        self._repo_index_service = repo_index_service
         self._remote_metadata_cache: dict[str, tuple[str, int]] = {}
 
     def scan_repositories(self, root_path: Path) -> list[LocalRepo]:
@@ -55,6 +63,10 @@ class LocalRepoService:
         self._git_service.ensure_git_available()
         if not root_path.exists():
             return []
+
+        if self._repo_index_service is not None:
+            repository_states = self._repo_index_service.scan_root(root_path)
+            return [self._map_state_to_local_repo(repository) for repository in repository_states]
 
         repositories: list[LocalRepo] = []
         for current_path, dir_names, _file_names in root_path.walk():
@@ -87,6 +99,87 @@ class LocalRepoService:
 
         repositories.sort(key=lambda item: item.name.lower())
         return repositories
+
+    def _map_state_to_local_repo(self, repository: RepositoryState) -> LocalRepo:
+        """
+        Wandelt einen persistierten Repository-Zustand in das UI-nahe LocalRepo-Modell um.
+
+        Eingabeparameter:
+        - repository: Persistierter Zustand aus `igitty_state.db`.
+
+        Rueckgabewerte:
+        - Vollstaendig aufbereitetes LocalRepo fuer Tabelle und Workflows.
+
+        Moegliche Fehlerfaelle:
+        - Keine; fehlende Werte werden mit stabilen Defaults ersetzt.
+
+        Wichtige interne Logik:
+        - Das Mapping verbindet den neuen State-Layer rueckwaertskompatibel mit den
+          bestehenden Controllern und Workern.
+        """
+
+        remote_repo_id = 0
+        if repository.remote_owner and repository.remote_repo_name:
+            visibility, resolved_repo_id = self._resolve_remote_visibility(repository.remote_url)
+            if repository.remote_visibility in {"unknown", "not_published"}:
+                repository.remote_visibility = visibility
+            remote_repo_id = resolved_repo_id
+
+        repo_details = {}
+        if repository.is_git_repo:
+            try:
+                repo_details = self._git_service.get_repo_details(Path(repository.local_path))
+            except Exception:  # noqa: BLE001
+                repo_details = {}
+
+        return LocalRepo(
+            name=repository.name,
+            full_path=repository.local_path,
+            current_branch=repository.current_branch or "-",
+            has_remote=repository.has_remote,
+            remote_url=repository.remote_url,
+            has_changes=bool(repo_details.get("has_changes", False)),
+            untracked_count=int(repo_details.get("untracked_count", 0)),
+            modified_count=int(repo_details.get("modified_count", 0)),
+            last_commit_hash=repository.head_commit or "-",
+            last_commit_date=repository.head_commit_date or "-",
+            last_commit_message=str(repo_details.get("last_commit_message", "-")),
+            remote_visibility=repository.remote_visibility,
+            publish_as_public=(repository.remote_visibility == "public"),
+            remote_repo_id=remote_repo_id,
+            language_guess=self._guess_language(Path(repository.local_path)),
+            state_repo_id=int(repository.id or 0),
+            remote_status=repository.status,
+            remote_exists_online=repository.remote_exists_online,
+            recommended_action=self._build_recommended_action(repository.status),
+        )
+
+    def _build_recommended_action(self, remote_status: str) -> str:
+        """
+        Leitet aus dem Repository-Status eine kurze UI-Empfehlung ab.
+
+        Eingabeparameter:
+        - remote_status: Fachlicher Gesamtstatus des Repositories.
+
+        Rueckgabewerte:
+        - Kurzer Handlungshinweis fuer die lokale Tabelle.
+
+        Moegliche Fehlerfaelle:
+        - Unbekannte Stati liefern einen neutralen Platzhalter.
+
+        Wichtige interne Logik:
+        - Die Empfehlung bleibt bewusst knapp, damit die eigentliche Aktion im Controller entschieden wird.
+        """
+
+        recommendations = {
+            "REMOTE_OK": "Normal pushen",
+            "LOCAL_ONLY": "GitHub-Repo anlegen",
+            "REMOTE_MISSING": "Remote reparieren",
+            "REMOTE_UNREACHABLE": "Remote pruefen",
+            "BROKEN_GIT": "Repo reparieren",
+            "NOT_INITIALIZED": "Git initialisieren",
+        }
+        return recommendations.get(remote_status, "-")
 
     def _guess_language(self, repo_path: Path) -> str:
         """

@@ -119,3 +119,33 @@ class RepoStructRepository:
             )
             for row in rows
         ]
+
+    def fetch_repo_summary(self, repo_identifier: str, source_type: str) -> tuple[bool, int, str | None]:
+        """
+        Laedt eine kompakte Zusammenfassung vorhandener Strukturdaten fuer ein Repository.
+
+        Eingabeparameter:
+        - repo_identifier: Eindeutige Kennung des Repositories.
+        - source_type: Herkunft des Repositories.
+
+        Rueckgabewerte:
+        - Tupel aus Vorhandensein, Anzahl der Eintraege und letztem Scan-Zeitpunkt.
+
+        Moegliche Fehlerfaelle:
+        - Datenbankfehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Liefert bewusst nur Summenwerte fuer den Repo-Kontext und keinen Baum.
+        """
+
+        with sqlite_connection(self.database_file) as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS item_count, MAX(version_scan_timestamp) AS last_scan_timestamp
+                FROM repo_tree_items
+                WHERE repo_identifier = ? AND source_type = ?
+                """,
+                (repo_identifier, source_type),
+            ).fetchone()
+        item_count = int(row["item_count"] or 0)
+        return item_count > 0, item_count, row["last_scan_timestamp"]

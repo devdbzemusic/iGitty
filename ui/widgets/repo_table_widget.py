@@ -21,6 +21,8 @@ class RepoTableWidget(QGroupBox):
 
     filter_text_changed = Signal(str)
     row_activated = Signal(int)
+    row_context_requested = Signal(int)
+    row_selected = Signal(int)
 
     def __init__(self, title: str, columns: list[str]) -> None:
         """
@@ -78,6 +80,7 @@ class RepoTableWidget(QGroupBox):
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -105,6 +108,8 @@ class RepoTableWidget(QGroupBox):
         self._filter_input.textChanged.connect(self.filter_text_changed.emit)
         self._select_all_checkbox.toggled.connect(self._toggle_all_rows)
         self._table.itemDoubleClicked.connect(self._emit_row_activation)
+        self._table.customContextMenuRequested.connect(self._emit_context_request)
+        self._table.itemSelectionChanged.connect(self._emit_selected_row)
 
     def populate_rows(self, rows: list[list[str]]) -> None:
         """
@@ -280,3 +285,71 @@ class RepoTableWidget(QGroupBox):
         """
 
         self._table.setCellWidget(row_index, column_index, widget)
+
+    def set_row_background(self, row_index: int, color_hex: str) -> None:
+        """
+        Faerbt alle darstellbaren Zellen einer Tabellenzeile ein.
+
+        Eingabeparameter:
+        - row_index: Zielzeile fuer die farbliche Markierung.
+        - color_hex: Hex-Farbwert wie `#552222`.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Farbwerte werden von Qt defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Methode ermoeglicht Statusmarkierungen, ohne das Widget fachlich auf eine Liste festzulegen.
+        """
+
+        from PySide6.QtGui import QColor
+
+        color = QColor(color_hex)
+        for column_index in range(self._table.columnCount()):
+            item = self._table.item(row_index, column_index)
+            if item is not None:
+                item.setBackground(color)
+
+    def _emit_context_request(self, position) -> None:
+        """
+        Meldet die Tabellenzeile eines Kontextmenue-Aufrufs nach aussen.
+
+        Eingabeparameter:
+        - position: Von Qt gelieferte lokale Mausposition innerhalb der Tabelle.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Klicks ausserhalb gueltiger Zeilen werden ignoriert.
+
+        Wichtige interne Logik:
+        - Die Signalisierung bleibt bewusst generisch, damit das Hauptfenster das eigentliche Menue erstellt.
+        """
+
+        item = self._table.itemAt(position)
+        if item is not None:
+            self.row_context_requested.emit(item.row())
+
+    def _emit_selected_row(self) -> None:
+        """
+        Meldet die aktuell selektierte Zeile nach aussen.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Leere Tabellen oder keine Auswahl fuehren zu keinem Signal.
+
+        Wichtige interne Logik:
+        - Die Selektion bleibt rein technisch und ueberlaesst jede fachliche Reaktion dem Controller.
+        """
+
+        selected_items = self._table.selectedItems()
+        if selected_items:
+            self.row_selected.emit(selected_items[0].row())

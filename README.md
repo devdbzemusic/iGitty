@@ -1,78 +1,110 @@
 # iGitty
 
-iGitty ist ein Windows-first Desktop-Werkzeug fuer das gemeinsame Verwalten von Remote-GitHub-Repositories und lokalen Git-Repositories in einer zweispaltigen Arbeitsoberflaeche.
+iGitty ist eine Windows-first Desktop-Anwendung auf Basis von PySide6 zum Verwalten von Remote-GitHub-Repositories und lokalen Git-Repositories in einer gemeinsamen Oberflaeche.
 
-## MVP Teil 1
+## Aktueller Stand
 
-- Startbare PySide6-Anwendung mit 2-Pane-Hauptfenster
-- Dunkles QSS-Theme
-- Laden von `GITHUB_ACCESS_TOKEN`, `GITHUBAPP_CLIENT_ID` und `IGITTY_REPO_DIR`
-- Initialisierung von `igitty_jobs.db` und `repo_struct_vault.db`
-- Remote-GitHub-Repository-Ladelogik ueber die GitHub-REST-API mit Pagination
-- Checkbox-Tabelle fuer Remote-Repositories inklusive Filter und "Alle auswaehlen"
-- Lokale Repository-Erkennung mit Git-CLI-Statusdaten
-- Lokale Hauptliste ohne sichtbare Pfad-Spalte; der Pfad bleibt intern erhalten und ist per Tooltip verfuegbar
-- Public-Spalte in der lokalen Tabelle mit sauberer Unterscheidung zwischen `public`, `private`, `unknown` und `not_published`
-- Clone-Workflow mit sicherem Ueberspringen vorhandener Zielordner
-- Commit-Workflow mit Dialog fuer Nachricht und Stage-Modus
-- Push-Workflow mit optionaler Remote-Erstellung auf GitHub
-- Sichere Remote-Loeschung nur mit Clone-Nachweis aus SQLite und Textbestaetigung
-- Struktur-Scan lokaler Repositories in `repo_struct_vault.db`
-- Statusanzeige fuer GitHub-Verbindung, Rate Limit, Repo-Anzahl und Zielordner
+MVP Teil 1 ist umgesetzt und um einen persistenten lokalen State-Layer erweitert:
 
-## Start
+- Remote-GitHub-Repositories laden und anzeigen
+- Lokale Git-Repositories scannen und anzeigen
+- Ausgewaehlte Remote-Repositories lokal klonen
+- Ausgewaehlte lokale Repositories committen
+- Lokale Repositories auf GitHub pushen
+- Neue GitHub-Repositories fuer lokale Repositories anlegen
+- Remote-Loeschen mit Sicherheitslogik
+- Repo-Kontext per Doppelklick als Vorbereitung fuer Teil 2
+- Persistente Repository-Zustandsdaten in `data/igitty_state.db`
 
-1. Python 3.12 installieren.
-2. Abhaengigkeiten installieren:
+## State-Layer
+
+Der neue State-Layer speichert den lokalen Scan-Zustand getrennt von Job-Log und Struktur-Vault:
+
+- `data/igitty_jobs.db`: Job- und Aktionsprotokolle
+- `data/repo_struct_vault.db`: strukturorientierte Vault-Daten fuer Teil 2
+- `data/igitty_state.db`: persistente Repository-Metadaten, Online-Status und Dateiindex
+
+`igitty_state.db` enthaelt aktuell:
+
+- `repositories`: lokaler Repository-Zustand inklusive Branch, HEAD, Remote-Metadaten und Status
+- `repo_files`: einfacher Dateiindex pro Repository
+- `repo_status_events`: technische Zustandsereignisse wie lokale Scans oder Remote-Validierungen
+
+## Lokale Tabelle
+
+Die lokale Repository-Tabelle zeigt jetzt zusaetzlich:
+
+- `Remote Status`
+- `Online`
+- `Recommended Action`
+
+`REMOTE_MISSING`-Zeilen werden markiert. Ueber das Kontextmenue einer lokalen Zeile stehen diese Reparaturpfade bereit:
+
+- `Repair remote`
+- `Remove remote`
+- `Create GitHub repository`
+- `Reinitialize repository`
+
+Unter der lokalen Tabelle zeigt ein eigener Diagnosebereich fuer das aktuell ausgewaehlte Repository:
+
+- den persistierten State-Status
+- Remote- und Online-Zustand
+- letzte lokale Scan- und Remote-Check-Zeit
+- die juengsten `repo_status_events`
+
+Zusaetzlich zeigt ein eigener Bereich `Job-Historie` unter der lokalen Tabelle:
+
+- die juengsten Clone-, Commit-, Push-, Delete- und Struktur-Aktionen
+- die kombinierte Sicht aus `clone_history` und `action_history`
+
+## Repo-Kontext
+
+Ein Doppelklick auf ein Remote- oder lokales Repository oeffnet aktuell keinen vollstaendigen RepoViewer, sondern einen einfachen Repo-Kontext-Dialog.
+
+Dieser Dialog ist die saubere Eintrittsschicht fuer Teil 2 und zeigt nur zusammengefuehrte Metadaten:
+
+- Name und Full Name
+- Local Path und Remote URL
+- Branch- und Sichtbarkeitsdaten
+- letzte bekannte Aktion
+- Struktur-Vault-Zusammenfassung
+- juengste State-Diagnoseereignisse aus `repo_status_events`
+
+Die Remote-Tabelle bleibt kompakt; zusaetzliche GitHub-Basisfelder wie `created_at`, `pushed_at`, `size` und `topics` stehen aktuell ueber Tooltips an der Namensspalte zur Verfuegung.
+Soweit praktikabel werden auch Contributor-Zusammenfassungen geladen und in Tooltip sowie Repo-Kontext angezeigt.
+
+Noch nicht enthalten:
+
+- Dateiansicht
+- Editor
+- Diff-Ansicht
+
+## Starten
 
 ```powershell
 python -m pip install -r requirements.txt
-```
-
-3. Umgebungsvariablen setzen oder `.env.example` als Vorlage verwenden.
-4. Anwendung starten:
-
-```powershell
 python main.py
 ```
 
-## Umgebungsvariablen
+## Tests
 
-- `GITHUB_ACCESS_TOKEN`: Personal Access Token fuer GitHub.
-- `GITHUBAPP_CLIENT_ID`: Reserviert fuer spaetere GitHub-App-Authentifizierung.
-- `IGITTY_REPO_DIR`: Standardzielordner fuer lokale Repositories.
+```powershell
+python -m compileall core controllers db models services ui tests
+python -m pytest tests/test_masking.py tests/test_init_db.py tests/test_local_repo_service.py tests/test_clone_service.py tests/test_push_service.py tests/test_delete_service.py tests/test_repo_struct_service.py tests/test_repo_context_service.py tests/test_state_services.py tests/test_state_view_service.py tests/test_github_service.py
+```
 
-## Projektstruktur
+## Architekturhinweise
 
-- `ui/`: Fenster, Widgets und Worker
-- `controllers/`: Verbindet UI und Services
-- `services/`: GitHub-, Git- und Fachlogik
-- `db/`: SQLite-Verwaltung und Repositories
-- `models/`: Datamodelle fuer Repositories und Jobs
-- `core/`: Konfiguration, Pfade, Logging und Hilfsfunktionen
+- Keine Businesslogik in Widgets oder Dialogen
+- SQLite-Zugriffe liegen in Repository- oder Service-Schichten
+- Langsame lokale Scans laufen weiterhin ausserhalb des UI-Threads
+- Pushes beruecksichtigen jetzt den persistierten Repository-Status vor dem eigentlichen `git push`
+- Der Statusbereich zeigt beim erfolgreichen Remote-Laden den ermittelten GitHub-Login an, wenn die API ihn liefern konnte
 
-## RepoViewer Teil 2
+`igitty_jobs.db` fuehrt inzwischen neben der allgemeinen Job-Uebersicht auch die naeher an den Langprompt angelehnten Tabellen:
 
-- Doppelklick auf Remote- und Local-Zeilen ist bereits an `open_repo_context(...)` angebunden.
-- Der aktuelle RepoViewer nutzt den Struktur-Vault aus `repo_struct_vault.db` und zeigt gespeicherte Strukturknoten in einer Baumansicht an.
-- Fuer lokale Repositories ist der Viewer nach einem Struktur-Scan direkt nutzbar.
-- Fuer Remote-Repositories wird ein gespeicherter `remote_clone`-Strukturstand erwartet.
-
-## Verifikation
-
-- Build-Check: `python -m compileall .`
-- Testlauf: `python -m pytest`
-- GUI-Start: `python main.py`
-
-## Logging und Datenbanken
-
-- `igitty_jobs.db` enthaelt `jobs`, `clone_history` und `action_history`.
-- `repo_struct_vault.db` speichert baumartige Strukturknoten fuer den spaeteren RepoViewer.
-- Delete-Pruefungen verwenden Clone-Nachweise ueber `repo_name`, `remote_url` und `repo_id`.
-- Lokale Repositories speichern zusaetzlich `remote_visibility` sowie eine optionale lokale Push-Vorgabe `publish_as_public`.
-
-## Bekannte Grenzen
-
-- Der RepoViewer ist als erster Vault-basierter Viewer vorhanden, aber noch kein vollwertiger Code-/Datei-Explorer.
-- Push setzt voraus, dass das lokale Repository bereits initialisiert und commit-faehig ist.
-- Remote-Viewer-Inhalte haengen davon ab, dass fuer geklonte Remotes bereits Strukturdaten gespeichert wurden.
+- `job_steps`
+- `repo_snapshots`
+- `commit_history`
+- `push_history`
+- `delete_history`

@@ -114,7 +114,11 @@ class RemoteRepoController(QObject):
         """
 
         self._state.remote_repo_count = len(repositories)
-        self._state.github_status_text = "GitHub verbunden"
+        self._state.github_status_text = (
+            f"GitHub: {self._github_service.last_authenticated_login}"
+            if self._github_service.last_authenticated_login
+            else "GitHub verbunden"
+        )
         self._state.rate_limit = rate_limit
         self._window.populate_remote_repositories(repositories)
         self._window.set_remote_loading(False)
@@ -230,8 +234,12 @@ class RemoteRepoController(QObject):
                     action_type="clone",
                     source_type="remote",
                     repo_name=result.repo_name,
+                    repo_owner=result.repo_owner,
+                    local_path=result.local_path,
+                    remote_url=result.remote_url,
                     status=result.status,
                     message=result.message,
+                    reversible_flag=result.reversible_flag,
                 )
             )
             self._window.append_log_line(f"Clone {result.repo_name}: {result.status} - {result.message}")

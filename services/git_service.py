@@ -86,6 +86,171 @@ class GitService:
             "last_commit_message": last_commit_message,
         }
 
+    def is_git_repository(self, repo_path: Path) -> bool:
+        """
+        Prueft ueber die Git-CLI, ob sich ein Pfad innerhalb eines Work-Trees befindet.
+
+        Eingabeparameter:
+        - repo_path: Zu pruefender Dateisystempfad.
+
+        Rueckgabewerte:
+        - `True`, wenn Git den Pfad als Work-Tree erkennt, sonst `False`.
+
+        Moegliche Fehlerfaelle:
+        - Fehlerhafte oder fehlende Git-Umgebung fuehren zu `False`.
+
+        Wichtige interne Logik:
+        - Die Methode bleibt fehlertolerant, damit Scans auch bei defekten Repositories weiterlaufen koennen.
+        """
+
+        result = self._run_git(repo_path, ["rev-parse", "--is-inside-work-tree"], allow_failure=True).strip().lower()
+        return result == "true"
+
+    def get_head_commit_hash(self, repo_path: Path) -> str:
+        """
+        Liest den aktuellen HEAD-Commit-Hash eines Repositories aus.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+
+        Rueckgabewerte:
+        - Vollstaendiger Commit-Hash oder Leerstring bei nicht verfuegbarem HEAD.
+
+        Moegliche Fehlerfaelle:
+        - Fehler bei Git-Aufrufen werden defensiv als Leerstring behandelt.
+
+        Wichtige interne Logik:
+        - Die Rueckgabe bleibt leer statt mit Platzhalterwerten zu arbeiten, damit Services
+          selbst entscheiden koennen, wie sie fehlende Commits darstellen.
+        """
+
+        return self._run_git(repo_path, ["rev-parse", "HEAD"], allow_failure=True).strip()
+
+    def get_last_commit_date(self, repo_path: Path) -> str:
+        """
+        Liest das Datum des letzten Commits im ISO-Format aus.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+
+        Rueckgabewerte:
+        - ISO-Zeitstempel des letzten Commits oder Leerstring.
+
+        Moegliche Fehlerfaelle:
+        - Git-Fehler liefern defensiv einen Leerstring.
+
+        Wichtige interne Logik:
+        - Verwendet `%cI`, damit Datum und Zeitzone fuer die State-Datenbank stabil bleiben.
+        """
+
+        return self._run_git(repo_path, ["log", "-1", "--pretty=format:%cI"], allow_failure=True).strip()
+
+    def get_remote_names(self, repo_path: Path) -> list[str]:
+        """
+        Liest alle konfigurierten Remote-Namen eines Repositories aus.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+
+        Rueckgabewerte:
+        - Liste der konfigurierten Remote-Namen.
+
+        Moegliche Fehlerfaelle:
+        - Git-Fehler fuehren zu einer leeren Liste.
+
+        Wichtige interne Logik:
+        - Die Methode kapselt die einfache Listenlogik, damit hoehere Services keine CLI-Details kennen muessen.
+        """
+
+        output = self._run_git(repo_path, ["remote"], allow_failure=True)
+        return [line.strip() for line in output.splitlines() if line.strip()]
+
+    def get_remote_url(self, repo_path: Path, remote_name: str = "origin") -> str:
+        """
+        Liest die URL eines konfigurierten Remotes aus.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+        - remote_name: Name des Ziel-Remotes, standardmaessig `origin`.
+
+        Rueckgabewerte:
+        - Remote-URL oder Leerstring, wenn kein Remote vorhanden ist.
+
+        Moegliche Fehlerfaelle:
+        - Git-Fehler werden defensiv als Leerstring behandelt.
+
+        Wichtige interne Logik:
+        - Die Methode wird sowohl fuer Scans als auch fuer Reparaturaktionen genutzt.
+        """
+
+        return self._run_git(repo_path, ["remote", "get-url", remote_name], allow_failure=True).strip()
+
+    def get_status_porcelain(self, repo_path: Path) -> list[str]:
+        """
+        Liest den kompakten Git-Status fuer Aenderungs- und Tracking-Pruefungen aus.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+
+        Rueckgabewerte:
+        - Liste der Zeilen aus `git status --porcelain`.
+
+        Moegliche Fehlerfaelle:
+        - Git-Fehler fuehren zu einer leeren Liste.
+
+        Wichtige interne Logik:
+        - Das rohe Porzellanformat bleibt erhalten, damit Services unterschiedliche
+          Auswertungen darauf aufbauen koennen.
+        """
+
+        return self._run_git(repo_path, ["status", "--porcelain"], allow_failure=True).splitlines()
+
+    def list_tracked_files(self, repo_path: Path) -> list[str]:
+        """
+        Listet alle von Git verfolgten Dateien eines Repositories auf.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+
+        Rueckgabewerte:
+        - Liste relativer Dateipfade.
+
+        Moegliche Fehlerfaelle:
+        - Git-Fehler fuehren zu einer leeren Liste.
+
+        Wichtige interne Logik:
+        - Die Methode dient dem State-Dateiindex und kapselt das konkrete CLI-Kommando.
+        """
+
+        return [line.strip() for line in self._run_git(repo_path, ["ls-files"], allow_failure=True).splitlines() if line.strip()]
+
+    def list_ignored_paths(self, repo_path: Path) -> list[str]:
+        """
+        Listet von Git ignorierte Dateien und Verzeichnisse eines Repositories auf.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+
+        Rueckgabewerte:
+        - Liste relativer Pfade aus Git-Sicht.
+
+        Moegliche Fehlerfaelle:
+        - Git-Fehler fuehren zu einer leeren Liste.
+
+        Wichtige interne Logik:
+        - Nutzt `--directory`, damit ganze ignorierte Verzeichnisse kompakt erkannt werden.
+        """
+
+        return [
+            line.strip()
+            for line in self._run_git(
+                repo_path,
+                ["ls-files", "--others", "-i", "--exclude-standard", "--directory"],
+                allow_failure=True,
+            ).splitlines()
+            if line.strip()
+        ]
+
     def clone_repository(self, clone_url: str, target_path: Path) -> None:
         """
         Klont ein Remote-Repository ueber die Git-CLI in ein lokales Zielverzeichnis.
@@ -198,6 +363,47 @@ class GitService:
             self._run_git(repo_path, ["remote", "set-url", "origin", remote_url])
         else:
             self._run_git(repo_path, ["remote", "add", "origin", remote_url])
+
+    def remove_remote_origin(self, repo_path: Path) -> None:
+        """
+        Entfernt den `origin`-Remote eines lokalen Repositories.
+
+        Eingabeparameter:
+        - repo_path: Ziel-Repository fuer das Entfernen des Remotes.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Git lehnt das Entfernen ab.
+
+        Wichtige interne Logik:
+        - Das Entfernen wird nur versucht, wenn `origin` aktuell existiert.
+        """
+
+        current_origin = self.get_remote_url(repo_path, "origin")
+        if current_origin:
+            self._run_git(repo_path, ["remote", "remove", "origin"])
+
+    def initialize_repository(self, repo_path: Path) -> None:
+        """
+        Initialisiert einen Ordner neu als Git-Repository.
+
+        Eingabeparameter:
+        - repo_path: Zielpfad fuer `git init`.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Git-Initialisierung schlaegt fehl.
+
+        Wichtige interne Logik:
+        - Die Methode wird nur fuer explizite Reparaturpfade verwendet und fuehrt
+          keine weiteren Seiteneffekte wie Initial-Commits aus.
+        """
+
+        self._run_git(repo_path, ["init"])
 
     def push_current_branch(self, repo_path: Path, branch_name: str) -> None:
         """

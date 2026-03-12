@@ -16,6 +16,7 @@ class RuntimePaths:
     logs_dir: Path
     jobs_db_file: Path
     repo_struct_db_file: Path
+    state_db_file: Path
     log_file: Path
     stylesheet_file: Path
 
@@ -52,6 +53,7 @@ def ensure_runtime_paths() -> RuntimePaths:
         logs_dir=logs_dir,
         jobs_db_file=data_dir / "igitty_jobs.db",
         repo_struct_db_file=data_dir / "repo_struct_vault.db",
+        state_db_file=data_dir / "igitty_state.db",
         log_file=logs_dir / "igitty.log",
         stylesheet_file=assets_dir / "styles" / "neon_dark.qss",
     )

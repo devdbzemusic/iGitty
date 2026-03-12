@@ -35,6 +35,7 @@ class GitHubService:
 
         self._env_settings = env_settings
         self._timeout_seconds = timeout_seconds
+        self._last_authenticated_login = ""
         self._session = requests.Session()
         self._session.headers.update(
             {
@@ -67,6 +68,7 @@ class GitHubService:
             raise ConfigurationError("GITHUB_ACCESS_TOKEN ist nicht gesetzt.")
 
         self._session.headers["Authorization"] = f"Bearer {self._env_settings.github_access_token}"
+        self._last_authenticated_login = self._fetch_authenticated_login()
 
         repositories: list[RemoteRepo] = []
         page = 1
@@ -94,13 +96,36 @@ class GitHubService:
             if not payload:
                 break
 
-            repositories.extend(self._map_remote_repo(item) for item in payload)
+            repositories.extend(
+                self._map_remote_repo(item, self._fetch_contributors_info(item))
+                for item in payload
+            )
 
             if len(payload) < 100:
                 break
             page += 1
 
         return repositories, rate_limit
+
+    @property
+    def last_authenticated_login(self) -> str:
+        """
+        Liefert den zuletzt erfolgreich ermittelten GitHub-Login fuer Statusanzeigen.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Loginname des authentifizierten GitHub-Accounts oder Leerstring.
+
+        Moegliche Fehlerfaelle:
+        - Keine; fehlende Daten werden als leerer String dargestellt.
+
+        Wichtige interne Logik:
+        - Der Wert wird beim Laden der Remote-Repositories aktualisiert und danach von der UI gelesen.
+        """
+
+        return self._last_authenticated_login
 
     def create_repository(self, name: str, private: bool, description: str) -> RemoteRepo:
         """
@@ -203,6 +228,55 @@ class GitHubService:
             visibility = "private" if payload.get("private") else "public"
         return str(visibility), int(payload.get("id", 0))
 
+    def fetch_repository_metadata(self, owner: str, name: str) -> tuple[int, dict]:
+        """
+        Laedt rohe Metadaten eines GitHub-Repositories ueber Owner und Namen.
+
+        Eingabeparameter:
+        - owner: GitHub-Besitzer des Ziel-Repositories.
+        - name: Repository-Name ohne `.git`.
+
+        Rueckgabewerte:
+        - Tupel aus HTTP-Statuscode und JSON-Payload.
+
+        Moegliche Fehlerfaelle:
+        - Fehlendes Access Token.
+        - Netzwerkfehler oder ungueltige Antworten.
+
+        Wichtige interne Logik:
+        - Die Methode exponiert bewusst den HTTP-Status, damit spezialisierte Services
+          zwischen `404`, `200` und temporaren API-Problemen unterscheiden koennen.
+        """
+
+        self._ensure_authorization()
+        response = self._session.get(
+            f"https://api.github.com/repos/{owner}/{name}",
+            timeout=self._timeout_seconds,
+        )
+        payload = {}
+        if response.headers.get("content-type", "").startswith("application/json"):
+            payload = response.json()
+        return response.status_code, payload
+
+    def parse_github_remote(self, remote_url: str) -> tuple[str, str] | None:
+        """
+        Gibt Owner und Repository-Name fuer eine GitHub-Remote-URL frei.
+
+        Eingabeparameter:
+        - remote_url: HTTPS- oder SSH-Remote eines GitHub-Repositories.
+
+        Rueckgabewerte:
+        - Tupel aus Owner und Repository-Name oder `None`.
+
+        Moegliche Fehlerfaelle:
+        - Keine; unpassende URLs liefern `None`.
+
+        Wichtige interne Logik:
+        - Die oeffentliche Methode verhindert, dass andere Services auf private Hilfslogik zugreifen muessen.
+        """
+
+        return self._parse_github_remote(remote_url)
+
     def _extract_rate_limit(self, response: requests.Response) -> RateLimitInfo:
         """
         Liest die relevanten Rate-Limit-Header aus einer GitHub-Antwort aus.
@@ -251,7 +325,11 @@ class GitHubService:
             raise ConfigurationError("GITHUB_ACCESS_TOKEN ist nicht gesetzt.")
         self._session.headers["Authorization"] = f"Bearer {self._env_settings.github_access_token}"
 
-    def _map_remote_repo(self, item: dict) -> RemoteRepo:
+    def _map_remote_repo(
+        self,
+        item: dict,
+        contributors_info: tuple[int | None, str] | None = None,
+    ) -> RemoteRepo:
         """
         Transformiert ein GitHub-Repository-JSON in das interne Datamodell.
 
@@ -270,6 +348,7 @@ class GitHubService:
 
         visibility = "private" if item.get("private") else "public"
         owner = (item.get("owner") or {}).get("login", "")
+        contributors_count, contributors_summary = contributors_info or (None, "-")
         return RemoteRepo(
             repo_id=item.get("id", 0),
             name=item.get("name", ""),
@@ -285,9 +364,126 @@ class GitHubService:
             html_url=item.get("html_url", ""),
             description=item.get("description") or "",
             topics=list(item.get("topics") or []),
-            contributors_count=None,
+            contributors_count=contributors_count,
+            contributors_summary=contributors_summary,
+            created_at=item.get("created_at", ""),
             updated_at=item.get("updated_at", ""),
+            pushed_at=item.get("pushed_at", ""),
+            size=int(item.get("size") or 0),
         )
+
+    def _fetch_authenticated_login(self) -> str:
+        """
+        Ermittelt den Login des aktuell authentifizierten GitHub-Accounts.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - GitHub-Loginname oder Leerstring, wenn die Information nicht ermittelt werden konnte.
+
+        Moegliche Fehlerfaelle:
+        - Netzwerk- oder API-Fehler fuehren defensiv zu einem leeren Rueckgabewert.
+
+        Wichtige interne Logik:
+        - Der Login wird getrennt vom Repository-Laden geholt, damit der Statusbereich
+          einen konkreten Account statt eines generischen Verbunden-Status anzeigen kann.
+        """
+
+        try:
+            response = self._session.get(
+                "https://api.github.com/user",
+                timeout=self._timeout_seconds,
+            )
+        except requests.RequestException:
+            return ""
+        if response.status_code >= 400:
+            return ""
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        return str(payload.get("login") or "")
+
+    def _fetch_contributors_info(self, item: dict) -> tuple[int | None, str]:
+        """
+        Liest eine kompakte Contributor-Zusammenfassung fuer ein Remote-Repository.
+
+        Eingabeparameter:
+        - item: Einzelnes Repository-Objekt aus der GitHub-API.
+
+        Rueckgabewerte:
+        - Tupel aus Contributor-Anzahl und kurzer Textzusammenfassung.
+
+        Moegliche Fehlerfaelle:
+        - Fehlende Berechtigung, API-Fehler oder nicht verfuegbare Daten liefern `None` und `-`.
+
+        Wichtige interne Logik:
+        - Die Methode beschraenkt sich auf eine kleine erste Seite mit maximal drei Namen,
+          damit der MVP nuetzliche Informationen zeigt ohne das Rate-Limit unnoetig zu belasten.
+        """
+
+        contributors_url = str(item.get("contributors_url") or "")
+        if not contributors_url:
+            return None, "-"
+
+        try:
+            response = self._session.get(
+                contributors_url,
+                params={"per_page": 3, "anon": 1},
+                timeout=self._timeout_seconds,
+            )
+        except requests.RequestException:
+            return None, "-"
+        if response.status_code >= 400:
+            return None, "-"
+
+        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else []
+        if not isinstance(payload, list) or not payload:
+            return 0, "-"
+
+        names: list[str] = []
+        for contributor in payload[:3]:
+            if not isinstance(contributor, dict):
+                continue
+            names.append(
+                str(
+                    contributor.get("login")
+                    or contributor.get("name")
+                    or contributor.get("email")
+                    or "unbekannt"
+                )
+            )
+
+        contributors_count = self._extract_total_count_from_link(response.headers.get("Link", ""), fallback_count=len(payload))
+        summary = ", ".join(names) if names else "-"
+        if contributors_count > len(names):
+            summary = f"{summary} (+{contributors_count - len(names)})"
+        return contributors_count, summary
+
+    def _extract_total_count_from_link(self, link_header: str, fallback_count: int) -> int:
+        """
+        Schaetzt die Gesamtanzahl paginierter Elemente aus dem GitHub-Link-Header.
+
+        Eingabeparameter:
+        - link_header: Vollstaendiger HTTP-Link-Header der GitHub-API.
+        - fallback_count: Fallback-Wert, wenn keine Pagination erkennbar ist.
+
+        Rueckgabewerte:
+        - Geschaetzte Gesamtanzahl der Elemente.
+
+        Moegliche Fehlerfaelle:
+        - Nicht parsebare Header fallen auf den Fallback zurueck.
+
+        Wichtige interne Logik:
+        - GitHub liefert im `last`-Link die letzte Seitennummer; mit `per_page=3`
+          laesst sich daraus eine brauchbare Obergrenze fuer die Anzeige ableiten.
+        """
+
+        if not link_header:
+            return fallback_count
+        match = re.search(r"[?&]page=(\d+)[^>]*>; rel=\"last\"", link_header)
+        if not match:
+            return fallback_count
+        last_page = int(match.group(1))
+        return max(fallback_count, last_page * 3)
 
     def _parse_github_remote(self, remote_url: str) -> tuple[str, str] | None:
         """

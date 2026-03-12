@@ -23,6 +23,13 @@ class DummyRepoStructRepository:
 
         self.calls.append((repo_identifier, source_type, root_path, len(items)))
 
+    def fetch_repo_summary(self, repo_identifier: str, source_type: str) -> tuple[bool, int, str | None]:
+        """
+        Liefert eine feste Struktur-Zusammenfassung fuer Tests des Kontext-Services.
+        """
+
+        return True, 7, "2026-03-12T12:00:00"
+
 
 def test_repo_struct_service_scans_and_persists_items(tmp_path: Path) -> None:
     """

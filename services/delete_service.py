@@ -57,10 +57,12 @@ class DeleteService:
                         action_type="delete_remote",
                         repo_name=repository.name,
                         source_type="remote",
+                        repo_owner=repository.owner,
                         local_path="",
                         remote_url=repository.html_url,
                         status="success",
                         message="Remote-Repository erfolgreich geloescht.",
+                        reversible_flag=False,
                     )
                 )
             except Exception as error:  # noqa: BLE001
@@ -70,10 +72,12 @@ class DeleteService:
                         action_type="delete_remote",
                         repo_name=repository.name,
                         source_type="remote",
+                        repo_owner=repository.owner,
                         local_path="",
                         remote_url=repository.html_url,
                         status="error",
                         message=str(error),
+                        reversible_flag=False,
                     )
                 )
         return results

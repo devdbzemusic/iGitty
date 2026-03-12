@@ -33,7 +33,11 @@ class RemoteRepo:
     description: str
     topics: list[str] = field(default_factory=list)
     contributors_count: int | None = None
+    contributors_summary: str = ""
+    created_at: str = ""
     updated_at: str = ""
+    pushed_at: str = ""
+    size: int = 0
 
 
 @dataclass(slots=True)
@@ -55,3 +59,7 @@ class LocalRepo:
     publish_as_public: bool = False
     remote_repo_id: int = 0
     language_guess: str = "-"
+    state_repo_id: int = 0
+    remote_status: str = "LOCAL_ONLY"
+    remote_exists_online: int | None = None
+    recommended_action: str = "-"

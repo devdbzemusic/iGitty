@@ -79,8 +79,12 @@ class DeleteController:
                     action_type=result.action_type,
                     source_type=result.source_type,
                     repo_name=result.repo_name,
+                    repo_owner=result.repo_owner,
+                    local_path=result.local_path,
+                    remote_url=result.remote_url,
                     status=result.status,
                     message=result.message,
+                    reversible_flag=result.reversible_flag,
                 )
             )
             self._window.append_log_line(f"delete_remote {result.repo_name}: {result.status} - {result.message}")

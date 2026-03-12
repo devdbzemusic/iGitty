@@ -82,6 +82,7 @@ class RepoStructService:
                         remote_url=repository.remote_url,
                         status="success",
                         message=f"{len(items)} Strukturknoten gespeichert.",
+                        reversible_flag=False,
                     )
                 )
             except Exception as error:  # noqa: BLE001
@@ -95,6 +96,27 @@ class RepoStructService:
                         remote_url=repository.remote_url,
                         status="error",
                         message=str(error),
+                        reversible_flag=False,
                     )
                 )
         return results
+
+    def fetch_repo_summary(self, repo_identifier: str, source_type: str) -> tuple[bool, int, str | None]:
+        """
+        Liefert eine kompakte Struktur-Zusammenfassung fuer den Repo-Kontext.
+
+        Eingabeparameter:
+        - repo_identifier: Eindeutige Kennung des Repositories.
+        - source_type: Herkunft des Repositories.
+
+        Rueckgabewerte:
+        - Tupel aus Vorhandensein, Anzahl und letztem Scan-Zeitpunkt.
+
+        Moegliche Fehlerfaelle:
+        - Datenbankfehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Reicht die Repository-Zusammenfassung unveraendert an die Kontext-Schicht durch.
+        """
+
+        return self._repository.fetch_repo_summary(repo_identifier, source_type)

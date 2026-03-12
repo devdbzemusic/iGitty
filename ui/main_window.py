@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QSplitter,
     QVBoxLayout,
@@ -37,8 +38,10 @@ class MainWindow(QMainWindow):
     push_requested = Signal()
     delete_remote_requested = Signal()
     struct_scan_requested = Signal()
-    remote_repo_open_requested = Signal(str, str)
-    local_repo_open_requested = Signal(str, str)
+    remote_repo_open_requested = Signal(object, str)
+    local_repo_open_requested = Signal(object, str)
+    local_repo_action_requested = Signal(object, str)
+    local_repo_selected = Signal(object)
 
     def __init__(self) -> None:
         """
@@ -67,10 +70,23 @@ class MainWindow(QMainWindow):
         )
         self._local_table = RepoTableWidget(
             title="Lokale Repositories",
-            columns=["Auswahl", "Name", "Public", "Branch", "Remote", "Aenderungen", "Letzter Commit"],
+            columns=[
+                "Auswahl",
+                "Name",
+                "Public",
+                "Branch",
+                "Remote",
+                "Remote Status",
+                "Online",
+                "Recommended Action",
+                "Aenderungen",
+                "Letzter Commit",
+            ],
         )
         self._path_selector = PathSelectorWidget()
         self._log_panel = LogPanelWidget()
+        self._local_diagnostics_panel = LogPanelWidget()
+        self._local_history_panel = LogPanelWidget()
         self._status_bar_widget = StatusBarWidget()
         self._remote_repositories: list[RemoteRepo] = []
         self._local_repositories: list[LocalRepo] = []
@@ -129,9 +145,25 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(QLabel("Zielordner"))
         toolbar_layout.addWidget(self._path_selector, stretch=1)
 
+        local_box = QGroupBox("Lokale Ansicht")
+        local_layout = QVBoxLayout(local_box)
+        diagnostics_box = QGroupBox("Repository-Diagnose")
+        diagnostics_layout = QVBoxLayout(diagnostics_box)
+        history_box = QGroupBox("Job-Historie")
+        history_layout = QVBoxLayout(history_box)
+        self._local_diagnostics_panel.setMaximumBlockCount(200)
+        self._local_diagnostics_panel.set_messages([], "Kein lokales Repository ausgewaehlt.")
+        self._local_history_panel.setMaximumBlockCount(200)
+        self._local_history_panel.set_messages([], "Keine Job-Historie fuer dieses Repository vorhanden.")
+        diagnostics_layout.addWidget(self._local_diagnostics_panel)
+        history_layout.addWidget(self._local_history_panel)
+        local_layout.addWidget(self._local_table, stretch=1)
+        local_layout.addWidget(diagnostics_box, stretch=0)
+        local_layout.addWidget(history_box, stretch=0)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._remote_table)
-        splitter.addWidget(self._local_table)
+        splitter.addWidget(local_box)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
 
@@ -174,6 +206,8 @@ class MainWindow(QMainWindow):
         self._local_table.filter_text_changed.connect(self.local_filter_changed.emit)
         self._remote_table.row_activated.connect(self._open_remote_row)
         self._local_table.row_activated.connect(self._open_local_row)
+        self._local_table.row_context_requested.connect(self._show_local_context_menu)
+        self._local_table.row_selected.connect(self._select_local_row)
         self._path_selector.browse_requested.connect(self._choose_target_directory)
 
     def populate_remote_repositories(self, repositories: list[RemoteRepo]) -> None:
@@ -209,6 +243,8 @@ class MainWindow(QMainWindow):
             for repo in repositories
         ]
         self._remote_table.populate_rows(rows)
+        for row_index, repo in enumerate(repositories):
+            self._remote_table.set_item(row_index, 1, self._build_remote_name_item(repo))
         self._clone_button.setEnabled(bool(repositories))
         self._delete_button.setEnabled(bool(repositories))
 
@@ -237,6 +273,9 @@ class MainWindow(QMainWindow):
                 "",
                 repo.current_branch,
                 "Ja" if repo.has_remote else "Nein",
+                repo.remote_status,
+                self._format_online_state(repo.remote_exists_online),
+                repo.recommended_action,
                 f"Ja ({repo.modified_count}+{repo.untracked_count})" if repo.has_changes else "Nein",
                 f"{repo.last_commit_hash} {repo.last_commit_date}",
             ]
@@ -247,10 +286,15 @@ class MainWindow(QMainWindow):
             name_item = self._build_local_name_item(repo)
             self._local_table.set_item(row_index, 1, name_item)
             self._local_table.set_cell_widget(row_index, 2, self._build_public_checkbox(repo))
+            if repo.remote_status == "REMOTE_MISSING":
+                self._local_table.set_row_background(row_index, "#5c1f24")
         has_local = bool(repositories)
         self._commit_button.setEnabled(has_local)
         self._push_button.setEnabled(has_local)
         self._struct_scan_button.setEnabled(has_local)
+        if not repositories:
+            self._local_diagnostics_panel.set_messages([], "Kein lokales Repository ausgewaehlt.")
+            self._local_history_panel.set_messages([], "Keine Job-Historie fuer dieses Repository vorhanden.")
 
     def update_status(self, status: StatusSnapshot) -> None:
         """
@@ -289,6 +333,44 @@ class MainWindow(QMainWindow):
         """
 
         self._log_panel.append_message(message)
+
+    def set_local_repo_diagnostics(self, lines: list[str]) -> None:
+        """
+        Aktualisiert den Diagnosebereich fuer das aktuell selektierte lokale Repository.
+
+        Eingabeparameter:
+        - lines: Bereits formatierte Diagnosezeilen aus der Controller-/Service-Schicht.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Das Hauptfenster zeigt nur vorbereiteten Text an und enthaelt keine Diagnosefachlogik.
+        """
+
+        self._local_diagnostics_panel.set_messages(lines, "Kein lokales Repository ausgewaehlt.")
+
+    def set_local_repo_history(self, lines: list[str]) -> None:
+        """
+        Aktualisiert den Historienbereich fuer das aktuell selektierte lokale Repository.
+
+        Eingabeparameter:
+        - lines: Bereits formatierte Historienzeilen aus der Controller-/Service-Schicht.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Das Hauptfenster zeigt nur vorbereitete Daten an und haelt keine Job-Logik selbst vor.
+        """
+
+        self._local_history_panel.set_messages(lines, "Keine Job-Historie fuer dieses Repository vorhanden.")
 
     def set_target_directory(self, path_text: str) -> None:
         """
@@ -576,7 +658,18 @@ class MainWindow(QMainWindow):
         """
 
         if 0 <= row_index < len(self._remote_repositories):
-            self.remote_repo_open_requested.emit(self._remote_repositories[row_index].name, "remote")
+            repository = self._remote_repositories[row_index]
+            self.remote_repo_open_requested.emit(
+                {
+                    "repo_id": repository.repo_id,
+                    "remote_repo_id": repository.repo_id,
+                    "repo_name": repository.name,
+                    "repo_full_name": repository.full_name,
+                    "remote_url": repository.html_url,
+                    "clone_url": repository.clone_url,
+                },
+                "remote",
+            )
 
     def _open_local_row(self, row_index: int) -> None:
         """
@@ -596,7 +689,106 @@ class MainWindow(QMainWindow):
         """
 
         if 0 <= row_index < len(self._local_repositories):
-            self.local_repo_open_requested.emit(self._local_repositories[row_index].name, "local")
+            repository = self._local_repositories[row_index]
+            self.local_repo_open_requested.emit(
+                {
+                    "repo_name": repository.name,
+                    "local_path": repository.full_path,
+                    "remote_repo_id": repository.remote_repo_id,
+                    "remote_url": repository.remote_url,
+                    "clone_url": repository.remote_url,
+                },
+                "local",
+            )
+
+    def _select_local_row(self, row_index: int) -> None:
+        """
+        Meldet die aktuell selektierte lokale Tabellenzeile an den Controller.
+
+        Eingabeparameter:
+        - row_index: Selektierte Tabellenzeile.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Indizes werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Selektion wird ueber eine stabile fachliche Referenz statt ueber sichtbare Spaltentexte weitergereicht.
+        """
+
+        if 0 <= row_index < len(self._local_repositories):
+            repository = self._local_repositories[row_index]
+            self.local_repo_selected.emit(
+                {
+                    "repo_name": repository.name,
+                    "local_path": repository.full_path,
+                    "remote_repo_id": repository.remote_repo_id,
+                    "remote_url": repository.remote_url,
+                }
+            )
+
+    def get_remote_repositories(self) -> list[RemoteRepo]:
+        """
+        Liefert die aktuell im Hauptfenster gehaltenen Remote-Repositories.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Flache Kopie der aktuellen Remote-Repository-Liste.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Stellt Controllern lesenden Zugriff bereit, ohne die internen Listen direkt freizugeben.
+        """
+
+        return list(self._remote_repositories)
+
+    def get_local_repositories(self) -> list[LocalRepo]:
+        """
+        Liefert die aktuell im Hauptfenster gehaltenen lokalen Repositories.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Flache Kopie der aktuellen LocalRepo-Liste.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Dient der zentralen Repo-Kontext-Bildung im MainController.
+        """
+
+        return list(self._local_repositories)
+
+    def _format_online_state(self, remote_exists_online: int | None) -> str:
+        """
+        Uebersetzt den Online-Zustand eines Remotes in eine kurze Tabellenanzeige.
+
+        Eingabeparameter:
+        - remote_exists_online: `1`, `0` oder `None` aus dem State-Layer.
+
+        Rueckgabewerte:
+        - Kurzer UI-String fuer die lokale Tabelle.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Anzeige bleibt knapp, damit die eigentliche Fachlogik im Controller liegt.
+        """
+
+        if remote_exists_online == 1:
+            return "Ja"
+        if remote_exists_online == 0:
+            return "Nein"
+        return "Unbekannt"
 
     def _build_local_name_item(self, repository: LocalRepo):
         """
@@ -620,6 +812,43 @@ class MainWindow(QMainWindow):
         item = QTableWidgetItem(repository.name)
         item.setToolTip(f"Lokaler Pfad: {repository.full_path}")
         item.setStatusTip(repository.full_path)
+        return item
+
+    def _build_remote_name_item(self, repository: RemoteRepo):
+        """
+        Erzeugt das Name-Item fuer die Remote-Tabelle inklusive kompakter Metadaten im Tooltip.
+
+        Eingabeparameter:
+        - repository: Remote-Repository fuer die aktuelle Zeile.
+
+        Rueckgabewerte:
+        - Vollstaendig vorbereitetes QTableWidgetItem.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Zusatzeigenschaften werden in den Tooltip verlagert, damit die Haupttabelle kompakt bleibt.
+        """
+
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        topics_text = ", ".join(repository.topics) if repository.topics else "-"
+        item = QTableWidgetItem(repository.name)
+        item.setToolTip(
+            "\n".join(
+                [
+                    f"Full Name: {repository.full_name or '-'}",
+                    f"Created: {repository.created_at or '-'}",
+                    f"Updated: {repository.updated_at or '-'}",
+                    f"Pushed: {repository.pushed_at or '-'}",
+                    f"Size: {repository.size} KB",
+                    f"Topics: {topics_text}",
+                    f"Contributors: {repository.contributors_summary or '-'}",
+                    f"Beschreibung: {repository.description or '-'}",
+                ]
+            )
+        )
         return item
 
     def _build_public_checkbox(self, repository: LocalRepo) -> QWidget:
@@ -657,3 +886,47 @@ class MainWindow(QMainWindow):
             checkbox.toggled.connect(lambda checked, repo=repository: setattr(repo, "publish_as_public", checked))
         layout.addWidget(checkbox)
         return container
+
+    def _show_local_context_menu(self, row_index: int) -> None:
+        """
+        Baut das Kontextmenue fuer eine lokale Tabellenzeile und emittiert nur Aktionssignale.
+
+        Eingabeparameter:
+        - row_index: Aktivierte Tabellenzeile.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Zeilen werden ignoriert.
+
+        Wichtige interne Logik:
+        - Das Hauptfenster erstellt nur das Menue; die eigentliche Fachwirkung liegt im Controller.
+        """
+
+        if not (0 <= row_index < len(self._local_repositories)):
+            return
+
+        repository = self._local_repositories[row_index]
+        repo_ref = {
+            "repo_name": repository.name,
+            "local_path": repository.full_path,
+            "remote_url": repository.remote_url,
+            "remote_status": repository.remote_status,
+        }
+
+        menu = QMenu(self)
+        repair_action = menu.addAction("Repair remote")
+        remove_action = menu.addAction("Remove remote")
+        create_action = menu.addAction("Create GitHub repository")
+        reinitialize_action = menu.addAction("Reinitialize repository")
+
+        selected_action = menu.exec(self.cursor().pos())
+        if selected_action == repair_action:
+            self.local_repo_action_requested.emit(repo_ref, "repair_remote")
+        elif selected_action == remove_action:
+            self.local_repo_action_requested.emit(repo_ref, "remove_remote")
+        elif selected_action == create_action:
+            self.local_repo_action_requested.emit(repo_ref, "create_remote")
+        elif selected_action == reinitialize_action:
+            self.local_repo_action_requested.emit(repo_ref, "reinitialize_repository")

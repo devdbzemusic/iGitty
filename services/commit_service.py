@@ -71,6 +71,7 @@ class CommitService:
                         remote_url=repository.remote_url,
                         status="success",
                         message="Commit erfolgreich erstellt.",
+                        reversible_flag=False,
                     )
                 )
             except Exception as error:  # noqa: BLE001
@@ -84,6 +85,7 @@ class CommitService:
                         remote_url=repository.remote_url,
                         status="error",
                         message=str(error),
+                        reversible_flag=False,
                     )
                 )
         return results
