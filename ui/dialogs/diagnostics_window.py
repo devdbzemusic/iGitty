@@ -145,6 +145,26 @@ class DiagnosticsWindow(QDialog):
         self.refresh_live_log(force=True)
         self._sync_live_log_timer()
 
+    def live_log_file(self) -> Path | None:
+        """
+        Liefert die aktuell verbundene Live-Logdatei fuer Hilfsaktionen im Hauptfenster.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Hinterlegter Logpfad oder `None`.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Das Hauptfenster kann damit Datei- und Ordneraktionen anbieten, ohne eigene
+          Dateipfade parallel zum Diagnosefenster zu speichern.
+        """
+
+        return self._live_log_file
+
     def refresh_live_log(self, force: bool = False) -> None:
         """
         Laedt den aktuellen Inhalt der Logdatei in das sichtbare Live-Log-Feld.

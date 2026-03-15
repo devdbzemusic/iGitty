@@ -5,10 +5,13 @@ from db.init_db import initialize_databases
 from db.repo_struct_repository import RepoStructRepository
 from db.state_repository import StateRepository
 from core.paths import RuntimePaths
+from models.evolution_models import RepositorySnapshotFile
 from models.job_models import ActionRecord, CloneRecord
 from models.repo_models import LocalRepo, RemoteRepo
-from models.state_models import RepoStatusEvent, RepositoryState
+from models.state_models import RepoFileState, RepoStatusEvent, RepositoryState
 from services.repo_context_service import RepoContextService
+from services.repository_evolution_analyzer import RepositoryEvolutionAnalyzer
+from services.repository_snapshot_service import RepositorySnapshotService
 from services.repo_struct_service import RepoStructService
 
 
@@ -278,7 +281,7 @@ def test_repo_context_reads_history_and_struct_summary(tmp_path) -> None:
         )
     )
     struct_repository.replace_repo_items(
-        repo_identifier="demo",
+        repo_identifier=struct_service.build_repo_identifier(local_path="C:/demo"),
         source_type="local",
         root_path="C:/demo",
         items=[],
@@ -325,6 +328,8 @@ def test_repo_context_reads_history_and_struct_summary(tmp_path) -> None:
     assert context.struct_item_count == 0
     assert context.diagnostic_events
     assert "REMOTE_VALIDATION_COMPLETED" in context.diagnostic_events[0]
+    assert context.history_entries
+    assert context.repository_status == "REMOTE_OK"
 
 
 def test_repo_context_handles_missing_data_without_crashing(tmp_path) -> None:
@@ -347,3 +352,92 @@ def test_repo_context_handles_missing_data_without_crashing(tmp_path) -> None:
 
     assert context.repo_name == "unbekannt"
     assert context.last_action_type is None
+
+
+def test_repo_context_builds_timeline_and_snapshots_when_services_are_available(tmp_path) -> None:
+    """
+    Prueft, dass der RepoContext bei vorhandenem Snapshot-Service Timeline- und Evolutionsdaten fuellt.
+    """
+
+    paths = _build_runtime_paths(tmp_path)
+    job_repository = JobLogRepository(paths.jobs_db_file)
+    struct_repository = RepoStructRepository(paths.repo_struct_db_file)
+    state_repository = StateRepository(paths.state_db_file)
+    struct_service = RepoStructService(struct_repository)
+    snapshot_service = RepositorySnapshotService(
+        state_repository=state_repository,
+        job_log_repository=job_repository,
+        repo_struct_repository=struct_repository,
+        repo_struct_service=struct_service,
+    )
+    analyzer = RepositoryEvolutionAnalyzer(snapshot_service)
+    service = RepoContextService(
+        job_repository,
+        struct_service,
+        state_repository,
+        repository_snapshot_service=snapshot_service,
+        repository_evolution_analyzer=analyzer,
+    )
+    local_repo = LocalRepo(
+        name="demo",
+        full_path="C:/demo",
+        current_branch="main",
+        has_remote=True,
+        remote_url="https://github.com/owner/demo.git",
+        has_changes=False,
+        untracked_count=0,
+        modified_count=0,
+        last_commit_hash="-",
+        last_commit_date="-",
+        last_commit_message="-",
+        remote_visibility="public",
+        remote_repo_id=44,
+    )
+    state = state_repository.upsert_repository(
+        RepositoryState(
+            repo_key="local::c:/demo",
+            name="demo",
+            local_path="C:/demo",
+            is_git_repo=True,
+            current_branch="main",
+            head_commit="abc123",
+            has_remote=True,
+            remote_url="https://github.com/owner/demo.git",
+            remote_owner="owner",
+            remote_repo_name="demo",
+            status="REMOTE_OK",
+            scan_fingerprint="fp-1",
+            status_hash="status-1",
+        )
+    )
+    state_repository.update_repo_files_delta(
+        int(state.id or 0),
+        [
+            RepoFileState(
+                repo_id=int(state.id or 0),
+                relative_path="src/app.py",
+                path_type="file",
+                content_hash="hash-1",
+                last_seen_at="2026-03-15T10:00:00+00:00",
+                last_seen_scan_at="2026-03-15T10:00:00+00:00",
+            )
+        ],
+    )
+    struct_repository.replace_repo_items(
+        repo_identifier=struct_service.build_repo_identifier(local_path="C:/demo"),
+        source_type="local",
+        root_path="C:/demo",
+        items=[],
+    )
+    snapshot_service.capture_snapshot_for_repository(state, trigger_type="local_scan", force=True)
+
+    context = service.build_context(
+        repo_ref={"local_path": "C:/demo", "repo_name": "demo"},
+        source_type="local",
+        remote_repositories=[],
+        local_repositories=[local_repo],
+    )
+
+    assert context.snapshots
+    assert context.timeline_entries
+    assert context.evolution_summary is not None

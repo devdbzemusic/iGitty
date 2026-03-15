@@ -28,6 +28,13 @@ from services.remote_repo_service import RemoteRepoService
 from services.job_history_view_service import JobHistoryViewService
 from services.repo_context_service import RepoContextService
 from services.repo_index_service import RepoIndexService
+from services.repository_evolution_analyzer import RepositoryEvolutionAnalyzer
+from services.repository_pairing_service import RepositoryPairingService
+from services.repository_structure_scanner import RepositoryStructureScanner
+from services.repository_snapshot_service import RepositorySnapshotService
+from services.repository_sync_analyzer import RepositorySyncAnalyzer
+from services.repository_sync_orchestrator import RepositorySyncOrchestrator
+from services.repo_action_resolver import RepoActionResolver
 from services.repo_structure_service import RepoStructureService
 from services.repo_struct_service import RepoStructService
 from services.state_view_service import StateViewService
@@ -86,14 +93,45 @@ class MainController:
         self._window.remote_repo_open_requested.connect(self.open_repo_context)
         self._window.local_repo_open_requested.connect(self.open_repo_context)
         self._window.local_repo_selected.connect(self.show_local_repo_diagnostics)
+        self._window.refresh_all_requested.connect(self._refresh_all_repositories)
+        self._window.normal_refresh_requested.connect(self._normal_refresh)
+        self._window.hard_refresh_requested.connect(self._hard_refresh)
+        self._window.refresh_selected_repository_requested.connect(self._refresh_selected_repository)
 
         github_service = GitHubService(env_settings)
         git_service = GitService(logger=logger)
+        repo_action_resolver = RepoActionResolver()
         git_inspector_service = GitInspectorService(git_service=git_service, logger=logger)
         remote_validation_service = RemoteValidationService(github_service=github_service, state_repository=self._state_repository)
+        repository_pairing_service = RepositoryPairingService(
+            state_repository=self._state_repository,
+            logger=logger,
+        )
+        repository_sync_analyzer = RepositorySyncAnalyzer(
+            git_service=git_service,
+            repo_action_resolver=repo_action_resolver,
+            logger=logger,
+        )
+        repository_structure_scanner = RepositoryStructureScanner(
+            repository=self._repo_struct_repository,
+            git_service=git_service,
+            logger=logger,
+        )
+        job_log_repository = JobLogRepository(paths.jobs_db_file)
+        repo_struct_service = RepoStructService(
+            self._repo_struct_repository,
+            structure_scanner=repository_structure_scanner,
+        )
         repo_structure_service = RepoStructureService(
             state_repository=self._state_repository,
             git_service=git_service,
+            logger=logger,
+        )
+        repository_snapshot_service = RepositorySnapshotService(
+            state_repository=self._state_repository,
+            job_log_repository=job_log_repository,
+            repo_struct_repository=self._repo_struct_repository,
+            repo_struct_service=repo_struct_service,
             logger=logger,
         )
         repo_index_service = RepoIndexService(
@@ -101,6 +139,9 @@ class MainController:
             git_inspector_service=git_inspector_service,
             remote_validation_service=remote_validation_service,
             repo_structure_service=repo_structure_service,
+            repository_structure_scanner=repository_structure_scanner,
+            repo_action_resolver=repo_action_resolver,
+            repository_snapshot_service=repository_snapshot_service,
             logger=logger,
         )
         clone_service = CloneService(git_service=git_service)
@@ -112,21 +153,34 @@ class MainController:
             github_service=github_service,
             state_repository=self._state_repository,
             logger=logger,
+            repo_action_resolver=repo_action_resolver,
+            repository_snapshot_service=repository_snapshot_service,
         )
         local_repo_service = LocalRepoService(
             git_service=git_service,
             github_service=github_service,
             repo_index_service=repo_index_service,
             logger=logger,
+            repo_action_resolver=repo_action_resolver,
         )
-        job_log_repository = JobLogRepository(paths.jobs_db_file)
-        repo_struct_service = RepoStructService(self._repo_struct_repository)
+        repository_evolution_analyzer = RepositoryEvolutionAnalyzer(repository_snapshot_service)
         self._state_view_service = StateViewService(self._state_repository)
         self._job_history_view_service = JobHistoryViewService(job_log_repository)
         self._repo_context_service = RepoContextService(
             job_log_repository=job_log_repository,
             repo_struct_service=repo_struct_service,
             state_repository=self._state_repository,
+            repo_action_resolver=repo_action_resolver,
+            repository_snapshot_service=repository_snapshot_service,
+            repository_evolution_analyzer=repository_evolution_analyzer,
+        )
+        self._sync_orchestrator = RepositorySyncOrchestrator(
+            repo_index_service=repo_index_service,
+            remote_repo_service=remote_repo_service,
+            state_repository=self._state_repository,
+            pairing_service=repository_pairing_service,
+            sync_analyzer=repository_sync_analyzer,
+            logger=logger,
         )
         self._remote_repo_controller = RemoteRepoController(
             window=window,
@@ -137,6 +191,8 @@ class MainController:
             state=self._state,
             logger=logger,
             job_log_repository=job_log_repository,
+            repository_snapshot_service=repository_snapshot_service,
+            sync_orchestrator=self._sync_orchestrator,
             post_clone_callback=self._scan_local_after_clone,
         )
         self._local_repo_controller = LocalRepoController(
@@ -145,6 +201,7 @@ class MainController:
             state=self._state,
             logger=logger,
             job_log_repository=job_log_repository,
+            sync_orchestrator=self._sync_orchestrator,
         )
         self._action_controller = ActionController(
             window=window,
@@ -154,6 +211,7 @@ class MainController:
             repo_struct_service=repo_struct_service,
             job_log_repository=job_log_repository,
             logger=logger,
+            repository_snapshot_service=repository_snapshot_service,
             post_action_refresh_callback=self._scan_local_after_clone,
             post_single_repo_refresh_callback=self._local_repo_controller.refresh_local_repository_entry,
         )
@@ -171,6 +229,97 @@ class MainController:
         self._local_repo_controller.bootstrap_local_repositories()
         QTimer.singleShot(0, self._remote_repo_controller.load_remote_repositories)
         QTimer.singleShot(0, self._local_repo_controller.scan_local_repositories)
+
+    def _refresh_all_repositories(self) -> None:
+        """
+        Stoesst einen gemeinsamen Normal-Refresh fuer lokale und entfernte Repositories an.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Einzelne Teilfehler werden in den spezialisierten Controllern behandelt.
+
+        Wichtige interne Logik:
+        - Die Menueaktion bleibt bewusst orchestral gedacht, nutzt aber weiterhin die
+          bestehenden nicht-blockierenden Worker-Controller fuer die konkrete Ausfuehrung.
+        """
+
+        self._remote_repo_controller.load_remote_repositories()
+        self._local_repo_controller.scan_local_repositories()
+
+    def _normal_refresh(self) -> None:
+        """
+        Startet einen normalen Delta-Refresh ueber beide Seiten.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine zusaetzlichen; die Fachbehandlung erfolgt in den Teilcontrollern.
+
+        Wichtige interne Logik:
+        - Der Normal-Refresh verwendet denselben sicheren Delta-Pfad wie regulare Scans
+          und vermeidet unnoetige Hard-Refreshes.
+        """
+
+        self._refresh_all_repositories()
+
+    def _hard_refresh(self) -> None:
+        """
+        Startet einen erzwungenen Tiefenscan fuer die lokale Seite und einen frischen Remote-Refresh.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine zusaetzlichen; die Fachbehandlung erfolgt in den Teilcontrollern.
+
+        Wichtige interne Logik:
+        - Der lokale Teil nutzt explizit `hard_refresh=True`, waehrend die Remote-Seite
+          wie bisher vollstaendig aus der GitHub-API neu geladen wird.
+        """
+
+        self._remote_repo_controller.load_remote_repositories()
+        self._local_repo_controller.scan_local_repositories(hard_refresh=True)
+
+    def _refresh_selected_repository(self) -> None:
+        """
+        Aktualisiert gezielt das aktuell selektierte Repository aus der Hauptansicht.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Fehlende Selektionen werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Lokale Repositories werden wirklich einzeln aktualisiert, waehrend die Remote-
+          Seite mangels Einzel-API-Workflow aktuell einen frischen Remote-Refresh ausloest.
+        """
+
+        source_type, repo_ref = self._window.current_repository_selection()
+        if not repo_ref:
+            return
+        if source_type == "local":
+            local_path = str(repo_ref.get("local_path") or "")
+            if local_path:
+                self._local_repo_controller.refresh_local_repository_entry(local_path)
+            return
+        if source_type == "remote":
+            self._remote_repo_controller.load_remote_repositories()
 
     def _scan_local_after_clone(self) -> None:
         """

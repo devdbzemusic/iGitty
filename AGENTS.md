@@ -71,6 +71,12 @@ Der Schwerpunkt von **MVP Teil 1** liegt auf:
    - UI-Aktionen sollen zentral aus Zustand und Regeln abgeleitet werden.
    - Remote-Metadaten fuer Tooltips und spaetere RepoViewer-Einstiege sollen ebenfalls im State-Cache landen.
 
+10. **Pairing und Sync-Analyse**
+   - Lokale und entfernte Repositories sollen ueber `repo_links` oder gleichwertige State-Strukturen verknuepft werden.
+   - Sichere Matches ueber URL oder GitHub-ID haben Vorrang vor unsicheren Namensmatches.
+   - Sync-Zustaende muessen auf Git-Beziehungen wie HEAD, Merge-Base, Ahead/Behind und ungecommitteten Aenderungen basieren.
+   - Gefaehrliche Git-Aktionen bleiben explizit und duerfen nie blind automatisiert werden.
+
 ---
 
 ## Technologie-Stack
