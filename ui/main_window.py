@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -13,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QVBoxLayout,
@@ -28,10 +32,38 @@ from ui.widgets.repo_table_widget import RepoTableWidget
 from ui.widgets.status_bar_widget import StatusBarWidget
 
 
+@dataclass(slots=True)
+class RepositoryTableEntry:
+    """
+    Beschreibt einen einzelnen sichtbaren Eintrag der kombinierten Repository-Tabelle.
+
+    Eingabeparameter:
+    - source_type: Herkunft des Eintrags als `local` oder `remote`.
+    - repository: Zugehoeriges View-Model aus der bestehenden Local- oder Remote-Liste.
+
+    Rueckgabewerte:
+    - Keine.
+
+    Moegliche Fehlerfaelle:
+    - Keine direkt in der Dataklasse.
+
+    Wichtige interne Logik:
+    - Die kombinierte Haupttabelle zeigt genau diese abstrahierten Eintraege an, waehrend
+      die bestehenden Controller weiterhin mit ihren spezialisierten Listenmodellen arbeiten.
+    """
+
+    source_type: str
+    repository: object
+
+
 class MainWindow(QMainWindow):
     """Stellt das zweispaltige Arbeitsfenster des MVP bereit."""
 
     refresh_remote_requested = Signal()
+    refresh_all_requested = Signal()
+    normal_refresh_requested = Signal()
+    hard_refresh_requested = Signal()
+    refresh_selected_repository_requested = Signal()
     remote_filter_changed = Signal(str)
     scan_local_requested = Signal()
     local_filter_changed = Signal(str)
@@ -46,6 +78,7 @@ class MainWindow(QMainWindow):
     local_repo_open_requested = Signal(object, str)
     local_repo_action_requested = Signal(object, str)
     local_repo_selected = Signal(object)
+    remote_repo_selected = Signal(object)
 
     def __init__(self) -> None:
         """
@@ -69,23 +102,49 @@ class MainWindow(QMainWindow):
         self.resize(1600, 920)
         self.setObjectName("main_window")
 
+        self._repository_table = RepoTableWidget(
+            title="Repository Table",
+            columns=[
+                "Auswahl",
+                "Name",
+                "Branch",
+                "Sync State",
+                "Ahead",
+                "Behind",
+                "Health",
+                "Recommended Action",
+                "Last Checked",
+            ],
+        )
         self._remote_table = RepoTableWidget(
             title="Remote GitHub Repositories",
-            columns=["Auswahl", "Name", "Owner", "Sichtbarkeit", "Branch", "Language", "Archiv", "Fork", "Updated"],
+            columns=[
+                "Auswahl",
+                "Name",
+                "Owner",
+                "Local Path",
+                "Branch",
+                "Sync State",
+                "Health",
+                "Recommended Action",
+                "Visibility",
+                "Updated",
+            ],
         )
         self._local_table = RepoTableWidget(
             title="Lokale Repositories",
             columns=[
                 "Auswahl",
                 "Name",
-                "Public",
+                "Owner",
+                "Local Path",
                 "Branch",
-                "Remote",
-                "Remote Status",
-                "Online",
+                "Sync State",
+                "Ahead",
+                "Behind",
+                "Health",
                 "Recommended Action",
-                "Aenderungen",
-                "Letzter Commit",
+                "Last Checked",
             ],
         )
         self._path_selector = PathSelectorWidget()
@@ -94,6 +153,12 @@ class MainWindow(QMainWindow):
         self._status_bar_widget = StatusBarWidget()
         self._remote_repositories: list[RemoteRepo] = []
         self._local_repositories: list[LocalRepo] = []
+        self._repository_entries: list[RepositoryTableEntry] = []
+        self._selected_remote_index: int = -1
+        self._selected_local_index: int = -1
+        self._selected_repository_index: int = -1
+        self._selection_source: str = ""
+        self._repository_menu_actions: dict[str, QAction] = {}
 
         self._build_ui()
         self._wire_signals()
@@ -121,65 +186,80 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(12, 12, 12, 12)
         root_layout.setSpacing(12)
 
-        toolbar_box = QGroupBox("Aktionen")
-        toolbar_layout = QHBoxLayout(toolbar_box)
-        self._refresh_remote_button = QPushButton("Remote laden")
-        self._scan_local_button = QPushButton("Lokale Repos scannen")
-        self._clone_button = QPushButton("Klonen")
-        self._commit_button = QPushButton("Commit")
-        self._push_button = QPushButton("Push")
-        self._delete_button = QPushButton("Remote loeschen")
-        self._struct_scan_button = QPushButton("Struktur scannen")
-        self._diagnostics_button = QPushButton("Diagnosefenster")
-        self._refresh_remote_button.setObjectName("refresh_remote_button")
-        self._scan_local_button.setObjectName("scan_local_button")
-        self._clone_button.setObjectName("clone_button")
-        self._commit_button.setObjectName("commit_button")
-        self._push_button.setObjectName("push_button")
-        self._delete_button.setObjectName("delete_button")
-        self._struct_scan_button.setObjectName("struct_scan_button")
-        self._diagnostics_button.setObjectName("diagnostics_button")
-        self._clone_button.setEnabled(False)
-        self._commit_button.setEnabled(False)
-        self._push_button.setEnabled(False)
-        self._delete_button.setEnabled(False)
-        self._struct_scan_button.setEnabled(False)
-
-        for widget in (
-            self._refresh_remote_button,
-            self._scan_local_button,
-            self._clone_button,
-            self._commit_button,
-            self._push_button,
-            self._delete_button,
-            self._struct_scan_button,
-            self._diagnostics_button,
+        self._main_toolbar = self.addToolBar("Hauptaktionen")
+        self._main_toolbar.setMovable(False)
+        self._toolbar_refresh_all_action = QAction("Alles aktualisieren", self)
+        self._toolbar_pull_action = QAction("Pull", self)
+        self._toolbar_push_action = QAction("Push", self)
+        self._toolbar_commit_action = QAction("Commit", self)
+        self._toolbar_clone_action = QAction("Clone", self)
+        self._toolbar_publish_action = QAction("Publish", self)
+        for action in (
+            self._toolbar_refresh_all_action,
+            self._toolbar_pull_action,
+            self._toolbar_push_action,
+            self._toolbar_commit_action,
+            self._toolbar_clone_action,
+            self._toolbar_publish_action,
         ):
-            toolbar_layout.addWidget(widget)
-        toolbar_layout.addStretch(1)
-        toolbar_layout.addWidget(QLabel("Zielordner"))
-        toolbar_layout.addWidget(self._path_selector, stretch=1)
+            self._main_toolbar.addAction(action)
+        self._main_toolbar.addSeparator()
+        target_container = QWidget()
+        target_layout = QHBoxLayout(target_container)
+        target_layout.setContentsMargins(0, 0, 0, 0)
+        target_layout.addWidget(QLabel("Zielordner"))
+        target_layout.addWidget(self._path_selector)
+        self._main_toolbar.addWidget(target_container)
 
-        local_box = QGroupBox("Lokale Ansicht")
-        local_layout = QVBoxLayout(local_box)
-        local_layout.addWidget(self._local_table, stretch=1)
+        repository_box = QGroupBox("Repositories")
+        repository_layout = QVBoxLayout(repository_box)
+        repository_layout.addWidget(self._repository_table, stretch=1)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._remote_table)
-        splitter.addWidget(local_box)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
+        details_box = QGroupBox("Repository Details")
+        details_layout = QVBoxLayout(details_box)
+        self._details_panel = LogPanelWidget()
+        self._details_panel.set_messages([], "Kein Repository ausgewaehlt.")
+        details_layout.addWidget(self._details_panel)
 
-        log_box = QGroupBox("Aktionslog")
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.addWidget(repository_box)
+        main_splitter.addWidget(details_box)
+        main_splitter.setStretchFactor(0, 3)
+        main_splitter.setStretchFactor(1, 2)
+
+        diagnostics_box = QGroupBox("Diagnose")
+        self._diagnostics_box = diagnostics_box
+        diagnostics_layout = QVBoxLayout(diagnostics_box)
+        self._diagnostics_panel = LogPanelWidget()
+        self._diagnostics_panel.set_messages([], "Keine Repository-Diagnose vorhanden.")
+        diagnostics_layout.addWidget(self._diagnostics_panel)
+
+        history_box = QGroupBox("Job-Historie")
+        self._history_box = history_box
+        history_layout = QVBoxLayout(history_box)
+        self._history_panel = LogPanelWidget()
+        self._history_panel.set_messages([], "Keine Job-Historie vorhanden.")
+        history_layout.addWidget(self._history_panel)
+
+        log_box = QGroupBox("Logbereich")
+        self._log_box = log_box
         log_layout = QVBoxLayout(log_box)
         log_layout.addWidget(self._log_panel)
 
-        root_layout.addWidget(toolbar_box)
-        root_layout.addWidget(splitter, stretch=1)
-        root_layout.addWidget(log_box, stretch=0)
+        bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
+        bottom_splitter.addWidget(diagnostics_box)
+        bottom_splitter.addWidget(history_box)
+        bottom_splitter.addWidget(log_box)
+        bottom_splitter.setStretchFactor(0, 2)
+        bottom_splitter.setStretchFactor(1, 2)
+        bottom_splitter.setStretchFactor(2, 2)
+
+        root_layout.addWidget(main_splitter, stretch=3)
+        root_layout.addWidget(bottom_splitter, stretch=2)
 
         self.setCentralWidget(central_widget)
         self.setStatusBar(self._status_bar_widget)
+        self._build_menu_bar()
 
     def _wire_signals(self) -> None:
         """
@@ -198,22 +278,445 @@ class MainWindow(QMainWindow):
         - Das Fenster exponiert nur die Signale, die Controller wirklich benoetigen.
         """
 
-        self._refresh_remote_button.clicked.connect(self.refresh_remote_requested.emit)
-        self._scan_local_button.clicked.connect(self.scan_local_requested.emit)
-        self._clone_button.clicked.connect(self.clone_requested.emit)
-        self._commit_button.clicked.connect(self.commit_requested.emit)
-        self._push_button.clicked.connect(self.push_requested.emit)
-        self._delete_button.clicked.connect(self.delete_remote_requested.emit)
-        self._struct_scan_button.clicked.connect(self.struct_scan_requested.emit)
-        self._remote_table.filter_text_changed.connect(self.remote_filter_changed.emit)
-        self._local_table.filter_text_changed.connect(self.local_filter_changed.emit)
-        self._remote_table.row_activated.connect(self._open_remote_row)
-        self._remote_table.row_context_requested.connect(self._show_remote_context_menu)
-        self._local_table.row_activated.connect(self._open_local_row)
-        self._local_table.row_context_requested.connect(self._show_local_context_menu)
-        self._local_table.row_selected.connect(self._select_local_row)
+        self._toolbar_refresh_all_action.triggered.connect(self.refresh_all_requested.emit)
+        self._toolbar_pull_action.triggered.connect(lambda: self._trigger_repository_action("pull"))
+        self._toolbar_push_action.triggered.connect(lambda: self._trigger_repository_action("push"))
+        self._toolbar_commit_action.triggered.connect(lambda: self._trigger_repository_action("commit"))
+        self._toolbar_clone_action.triggered.connect(lambda: self._trigger_repository_action("clone"))
+        self._toolbar_publish_action.triggered.connect(lambda: self._trigger_repository_action("create_remote"))
+        self._repository_table.filter_text_changed.connect(self.local_filter_changed.emit)
+        self._repository_table.row_activated.connect(self._open_repository_row)
+        self._repository_table.row_context_requested.connect(self._show_repository_context_menu)
+        self._repository_table.row_selected.connect(self._select_repository_row)
         self._path_selector.browse_requested.connect(self._choose_target_directory)
-        self._diagnostics_button.clicked.connect(self.show_diagnostics_window)
+        self._toolbar_refresh_all_action.setEnabled(True)
+        self._toolbar_pull_action.setEnabled(False)
+        self._toolbar_push_action.setEnabled(False)
+        self._toolbar_commit_action.setEnabled(False)
+        self._toolbar_clone_action.setEnabled(False)
+        self._toolbar_publish_action.setEnabled(False)
+        self._update_repository_menu_actions()
+
+    def _build_menu_bar(self) -> None:
+        """
+        Baut die zentrale Menueleiste fuer Laden, Synchronisieren, Repository-Aktionen und Diagnose auf.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Menues spiegeln die neue operative Struktur der Anwendung wider und
+          aktivieren Repository-Aktionen spaeter dynamisch anhand der aktuellen Selektion.
+        """
+
+        menu_bar = self.menuBar()
+
+        datei_menu = menu_bar.addMenu("Datei")
+        datei_menu.addAction(self._create_simple_action("GitHub verbinden", self._show_github_connect_hint))
+        datei_menu.addAction(self._create_simple_action("Zielordner waehlen", self._choose_target_directory))
+        datei_menu.addAction(self._create_simple_action("Einstellungen", self._show_settings_hint))
+        datei_menu.addAction(self._create_simple_action("Datenordner oeffnen", self._open_data_directory))
+        datei_menu.addAction(self._create_simple_action("Log-Datei oeffnen", self._open_live_log_file))
+        datei_menu.addSeparator()
+        datei_menu.addAction(self._create_simple_action("Beenden", self.close))
+
+        sync_menu = menu_bar.addMenu("Synchronisieren")
+        sync_menu.addAction(self._create_simple_action("Remote-Repositories laden", self.refresh_remote_requested.emit))
+        sync_menu.addAction(self._create_simple_action("Lokale Repositories scannen", self.scan_local_requested.emit))
+        sync_menu.addAction(self._create_simple_action("Alles aktualisieren", self.refresh_all_requested.emit))
+        sync_menu.addSeparator()
+        sync_menu.addAction(self._create_simple_action("Normal Refresh", self.normal_refresh_requested.emit))
+        sync_menu.addAction(self._create_simple_action("Hard Refresh", self.hard_refresh_requested.emit))
+        sync_menu.addAction(
+            self._create_simple_action(
+                "Ausgewaehltes Repository aktualisieren",
+                self.refresh_selected_repository_requested.emit,
+            )
+        )
+
+        repository_menu = menu_bar.addMenu("Repository")
+        for action_id in (
+            "open_repository",
+            "show_in_explorer",
+            "pull",
+            "push",
+            "commit",
+            "clone",
+            "create_remote",
+            "repair_remote",
+            "remove_remote",
+            "reinitialize_repository",
+            "resolve_divergence",
+        ):
+            action = QAction(self._action_label(action_id), self)
+            action.triggered.connect(lambda _checked=False, current_action_id=action_id: self._trigger_repository_action(current_action_id))
+            action.setEnabled(False)
+            repository_menu.addAction(action)
+            self._repository_menu_actions[action_id] = action
+
+        analyse_menu = menu_bar.addMenu("Analyse")
+        for action_id in ("open_repo_explorer", "show_history", "show_diagnostics"):
+            action = QAction(self._action_label(action_id), self)
+            action.triggered.connect(lambda _checked=False, current_action_id=action_id: self._trigger_repository_action(current_action_id))
+            action.setEnabled(False)
+            analyse_menu.addAction(action)
+            self._repository_menu_actions[action_id] = action
+        analyse_menu.addSeparator()
+        analyse_menu.addAction(self._create_simple_action("Struktur-Scan starten", self.struct_scan_requested.emit))
+        analyse_menu.addAction(self._create_simple_action("Status neu berechnen", self.normal_refresh_requested.emit))
+
+        ansicht_menu = menu_bar.addMenu("Ansicht")
+        ansicht_menu.addAction(self._create_simple_action("Diagnosebereich anzeigen", self._toggle_diagnostics_panel_visibility))
+        ansicht_menu.addAction(self._create_simple_action("Job-Historie anzeigen", self._toggle_history_panel_visibility))
+        ansicht_menu.addAction(self._create_simple_action("Logbereich anzeigen", self._toggle_log_panel_visibility))
+        ansicht_menu.addAction(self._create_simple_action("Repo Explorer anzeigen", lambda: self._trigger_repository_action("open_repo_explorer")))
+        ansicht_menu.addAction(self._create_simple_action("Spalten konfigurieren", self._show_column_configuration_hint))
+        ansicht_menu.addAction(self._create_simple_action("Filter zuruecksetzen", self._reset_filters))
+
+        hilfe_menu = menu_bar.addMenu("Hilfe")
+        hilfe_menu.addAction(self._create_simple_action("Ueber iGitty", self._show_about_dialog))
+        hilfe_menu.addAction(self._create_simple_action("README oeffnen", self._open_readme_file))
+        hilfe_menu.addAction(self._create_simple_action("Entwicklerdokumentation", self._open_developer_documentation))
+
+    def _create_simple_action(self, label: str, callback=None) -> QAction:
+        """
+        Erzeugt eine einfache Menu-Aktion mit optionalem Callback.
+
+        Eingabeparameter:
+        - label: Sichtbarer Menueeintrag.
+        - callback: Optionaler Aufruf bei Aktivierung.
+
+        Rueckgabewerte:
+        - Vollstaendig vorbereitete QAction.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Hilfsmethode haelt den Menueaufbau kompakt und lesbar.
+        """
+
+        action = QAction(label, self)
+        if callback is not None:
+            action.triggered.connect(lambda _checked=False, current_callback=callback: current_callback())
+        return action
+
+    def _action_label(self, action_id: str) -> str:
+        """
+        Liefert die sichtbare UI-Bezeichnung fuer eine technische Repository-Aktion.
+
+        Eingabeparameter:
+        - action_id: Technische Aktions-ID wie `push` oder `show_diagnostics`.
+
+        Rueckgabewerte:
+        - Sichtbares Label fuer Menue und Kontextmenue.
+
+        Moegliche Fehlerfaelle:
+        - Unbekannte Aktionen liefern ihre ID zurueck.
+
+        Wichtige interne Logik:
+        - Die Labels bleiben an einer Stelle gebuendelt, damit Menue und Kontextmenue
+          dieselbe Sprache sprechen wie der zentrale Action-Resolver.
+        """
+
+        labels = {
+            "open_repository": "Oeffnen",
+            "show_in_explorer": "Im Explorer anzeigen",
+            "clone": "Klonen",
+            "pull": "Pull",
+            "push": "Push",
+            "commit": "Commit",
+            "review_changes": "Aenderungen pruefen",
+            "stash_changes": "Aenderungen sichern",
+            "create_remote": "Publish",
+            "repair_remote": "Remote reparieren",
+            "remove_remote": "Remote entfernen",
+            "reinitialize_repository": "Repository neu initialisieren",
+            "resolve_divergence": "Divergenz aufloesen",
+            "open_repo_explorer": "Repo Explorer oeffnen",
+            "show_history": "Verlauf anzeigen",
+            "show_diagnostics": "Diagnose anzeigen",
+            "set_private": "Auf private setzen",
+            "set_public": "Auf public setzen",
+            "refresh_repository": "Repository aktualisieren",
+            "rescan": "Pfad pruefen",
+        }
+        return labels.get(action_id, action_id)
+
+    def _toggle_diagnostics_panel_visibility(self) -> None:
+        """
+        Blendet den eingebetteten Diagnosebereich der Hauptansicht ein oder aus.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Hauptansicht behaelt eine schnelle Inline-Diagnose, waehrend das separate
+          Diagnosefenster weiterhin fuer die tieferen Laufzeitdetails existiert.
+        """
+
+        self._diagnostics_box.setVisible(not self._diagnostics_box.isVisible())
+
+    def _toggle_history_panel_visibility(self) -> None:
+        """
+        Blendet den eingebetteten Job-Historienbereich der Hauptansicht ein oder aus.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Methode trennt Historie und Diagnose sauber, ohne die gesamte untere
+          Panel-Zone der Anwendung verstecken zu muessen.
+        """
+
+        self._history_box.setVisible(not self._history_box.isVisible())
+
+    def _toggle_log_panel_visibility(self) -> None:
+        """
+        Blendet das Logpanel im Hauptfenster ein oder aus.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Ansicht bleibt rein UI-seitig und veraendert keine Laufzeitdaten.
+        """
+
+        self._log_box.setVisible(not self._log_box.isVisible())
+
+    def _reset_filters(self) -> None:
+        """
+        Setzt die Tabellenfilter der Hauptansicht auf leer zurueck.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Methode kapselt den Reset fuer Menues und spaetere Toolbar-Aktionen.
+        """
+
+        self._repository_table.apply_filter("")
+        self.set_remote_filter_text("")
+        self.set_local_filter_text("")
+
+    def _show_github_connect_hint(self) -> None:
+        """
+        Zeigt einen sicheren Hinweis zur GitHub-Verbindung an, ohne sofort eine riskante Aktion auszufuehren.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Menueaktion bleibt bewusst informativ, weil Zugangsdaten in iGitty ueber
+          Umgebungsvariablen und bestehende Ladepfade gesteuert werden.
+        """
+
+        QMessageBox.information(
+            self,
+            "GitHub verbinden",
+            (
+                "iGitty verwendet die bestehende GitHub-Konfiguration aus der Umgebung.\n\n"
+                "Pruefe bei Bedarf `GITHUB_ACCESS_TOKEN` und lade danach die Remote-Repositories neu."
+            ),
+        )
+
+    def _show_settings_hint(self) -> None:
+        """
+        Zeigt einen sicheren Platzhalter fuer spaetere Anwendungseinstellungen an.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Das Redesign fuehrt den Menuepunkt bereits sichtbar ein, ohne eine zweite
+          Konfigurationslogik ausserhalb der bestehenden Architektur zu erfinden.
+        """
+
+        QMessageBox.information(
+            self,
+            "Einstellungen",
+            "Ein separater Einstellungsdialog ist vorbereitet, aber in diesem Stand noch nicht implementiert.",
+        )
+
+    def _show_column_configuration_hint(self) -> None:
+        """
+        Informiert ueber die geplante Spaltenkonfiguration der Haupttabelle.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Der Menuepunkt ist bereits Teil der neuen Struktur, bleibt aber bewusst
+          folgenlos, bis eine persistente Spaltenkonfiguration vorhanden ist.
+        """
+
+        QMessageBox.information(
+            self,
+            "Spalten konfigurieren",
+            "Die persistente Spaltenkonfiguration folgt in einem spaeteren UI-Ausbau.",
+        )
+
+    def _show_about_dialog(self) -> None:
+        """
+        Zeigt eine kompakte Ueber-Box mit Produktkontext der Anwendung an.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Hilfe bleibt lokal und leichtgewichtig, ohne zusaetzliche Dialogklassen
+          fuer einen kleinen statischen Informationsblock einzufuehren.
+        """
+
+        QMessageBox.information(
+            self,
+            "Ueber iGitty",
+            "iGitty ist ein intelligenter Repository Manager fuer lokale und GitHub-Repositories.",
+        )
+
+    def _open_live_log_file(self) -> None:
+        """
+        Oeffnet die zentrale Laufzeit-Logdatei im Betriebssystem, sofern bekannt.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Nicht vorhandene Dateien werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Methode ist bewusst rein lesend und betrifft nur lokale UI-Hilfsnavigation.
+        """
+
+        live_log_file = self._diagnostics_window.live_log_file()
+        if live_log_file is not None and live_log_file.exists():
+            os.startfile(live_log_file)  # type: ignore[attr-defined]
+
+    def _open_data_directory(self) -> None:
+        """
+        Oeffnet den gemeinsamen Datenordner der Anwendung, sofern aus dem Logpfad ableitbar.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Nicht vorhandene Verzeichnisse werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Methode leitet den Datenpfad aus bekannten Runtime-Dateien ab, statt
+          zusaetzlichen Zustand im Hauptfenster zu spiegeln.
+        """
+
+        live_log_file = self._diagnostics_window.live_log_file()
+        if live_log_file is None:
+            return
+        candidate_directory = live_log_file.parent.parent / "data"
+        if candidate_directory.exists():
+            os.startfile(candidate_directory)  # type: ignore[attr-defined]
+
+    def _open_readme_file(self) -> None:
+        """
+        Oeffnet die README-Datei des Projekts im Standardprogramm des Betriebssystems.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Fehlende Dateien werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Hilfeeintraege bleiben einfache lokale Dateiaktionen und fuehren keine
+          netzwerkabhaengige Dokumentationslogik ein.
+        """
+
+        readme_file = Path.cwd() / "README.md"
+        if readme_file.exists():
+            os.startfile(readme_file)  # type: ignore[attr-defined]
+
+    def _open_developer_documentation(self) -> None:
+        """
+        Oeffnet die Entwicklerhinweise des Projekts im Standardprogramm.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Fehlende Dateien werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Als Startpunkt wird bewusst die projektinterne `AGENTS.md` genutzt, weil dort
+          die aktuellsten Entwicklungsregeln und Architekturhinweise gepflegt werden.
+        """
+
+        documentation_file = Path.cwd() / "AGENTS.md"
+        if documentation_file.exists():
+            os.startfile(documentation_file)  # type: ignore[attr-defined]
 
     def populate_remote_repositories(self, repositories: list[RemoteRepo]) -> None:
         """
@@ -237,6 +740,7 @@ class MainWindow(QMainWindow):
         self._remote_table.populate_rows(rows)
         for row_index, repo in enumerate(repositories):
             self._render_remote_row(row_index, repo)
+        self._refresh_repository_table()
         self._update_remote_action_buttons()
 
     def populate_local_repositories(self, repositories) -> None:
@@ -261,10 +765,13 @@ class MainWindow(QMainWindow):
         self._local_table.populate_rows(rows)
         for row_index, repo in enumerate(repositories):
             self._render_local_row(row_index, repo)
+        self._refresh_repository_table()
         self._update_local_action_buttons()
         if not self._local_repositories:
             self._diagnostics_window.set_local_repo_diagnostics([])
             self._diagnostics_window.set_local_repo_history([])
+            self._diagnostics_panel.set_messages([], "Keine Repository-Diagnose vorhanden.")
+            self._history_panel.set_messages([], "Keine Job-Historie vorhanden.")
 
     def update_status(self, status: StatusSnapshot) -> None:
         """
@@ -304,6 +811,164 @@ class MainWindow(QMainWindow):
 
         self._log_panel.append_message(message)
 
+    def _refresh_repository_table(self) -> None:
+        """
+        Baut die sichtbare kombinierte Repository-Tabelle aus den aktuellen Local-/Remote-Listen neu auf.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine; fehlende Datenquellen fuehren lediglich zu einer leeren Tabelle.
+
+        Wichtige interne Logik:
+        - Gekoppelte oder bereits lokal vorhandene Repositories werden nur einmal gezeigt.
+        - Reine Remote-Repositories bleiben als eigene Zeilen sichtbar, damit Clone und
+          Diagnose weiterhin direkt aus der Hauptansicht moeglich sind.
+        """
+
+        entries: list[RepositoryTableEntry] = []
+        linked_remote_ids = {
+            repository.remote_repo_id
+            for repository in self._local_repositories
+            if repository.remote_repo_id > 0
+        }
+        linked_remote_paths = {
+            repository.full_path
+            for repository in self._local_repositories
+            if repository.full_path
+        }
+
+        for repository in sorted(self._local_repositories, key=lambda item: item.name.lower()):
+            entries.append(RepositoryTableEntry(source_type="local", repository=repository))
+
+        for repository in sorted(self._remote_repositories, key=lambda item: (item.full_name or item.name).lower()):
+            if repository.repo_id in linked_remote_ids:
+                continue
+            if repository.linked_local_path and repository.linked_local_path in linked_remote_paths:
+                continue
+            entries.append(RepositoryTableEntry(source_type="remote", repository=repository))
+
+        self._repository_entries = entries
+        rows = [self._build_repository_row_values(entry) for entry in entries]
+        self._repository_table.populate_rows(rows)
+        for row_index, entry in enumerate(entries):
+            self._render_repository_row(row_index, entry)
+        self._update_primary_toolbar_actions()
+        self._update_repository_menu_actions()
+
+    def _build_repository_row_values(self, entry: RepositoryTableEntry) -> list[str]:
+        """
+        Erzeugt die sichtbaren Standardwerte einer kombinierten Repository-Zeile.
+
+        Eingabeparameter:
+        - entry: Sichtbarer Eintrag aus der kombinierten Repository-Liste.
+
+        Rueckgabewerte:
+        - Liste der Standardzellwerte fuer die Haupttabelle.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Lokale und entfernte Repositories werden auf dieselben Kernspalten abgebildet,
+          damit die Bedienung in einer einzigen Haupttabelle konsistent bleibt.
+        """
+
+        if entry.source_type == "local":
+            repository = entry.repository
+            assert isinstance(repository, LocalRepo)
+            return [
+                "",
+                repository.name,
+                repository.current_branch or "-",
+                repository.sync_state or repository.remote_status,
+                str(repository.ahead_count),
+                str(repository.behind_count),
+                repository.health_state or "-",
+                repository.recommended_action or "-",
+                repository.last_checked_at or repository.last_commit_date or "-",
+            ]
+
+        repository = entry.repository
+        assert isinstance(repository, RemoteRepo)
+        return [
+            "",
+            repository.full_name or repository.name,
+            repository.default_branch or "-",
+            repository.sync_state or "REMOTE_ONLY",
+            str(repository.ahead_count),
+            str(repository.behind_count),
+            repository.health_state or "-",
+            repository.recommended_action or "-",
+            repository.last_checked_at or repository.updated_at or "-",
+        ]
+
+    def _render_repository_row(self, row_index: int, entry: RepositoryTableEntry) -> None:
+        """
+        Ergaenzt Tooltip- und Statusdarstellung fuer eine Zeile der kombinierten Repository-Tabelle.
+
+        Eingabeparameter:
+        - row_index: Zielzeile innerhalb der sichtbaren Haupttabelle.
+        - entry: Sichtbarer Eintrag aus der kombinierten Repository-Liste.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Zeilenfaerbung orientiert sich am Sync-State und macht Problemfaelle
+          sofort sichtbar, ohne die Tabelle mit weiteren Warnspalten zu ueberladen.
+        """
+
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        repository = entry.repository
+        if entry.source_type == "local":
+            assert isinstance(repository, LocalRepo)
+            item = QTableWidgetItem(repository.name)
+            item.setToolTip(
+                "\n".join(
+                    [
+                        "Quelle: Lokal",
+                        f"Pfad: {repository.full_path}",
+                        f"Remote: {repository.remote_url or '-'}",
+                        f"Recommended: {repository.recommended_action or '-'}",
+                    ]
+                )
+            )
+            sync_state = repository.sync_state
+        else:
+            assert isinstance(repository, RemoteRepo)
+            item = QTableWidgetItem(repository.full_name or repository.name)
+            item.setToolTip(
+                "\n".join(
+                    [
+                        "Quelle: Remote",
+                        f"Clone URL: {repository.clone_url or '-'}",
+                        f"Lokaler Pfad: {repository.linked_local_path or '-'}",
+                        f"Recommended: {repository.recommended_action or '-'}",
+                    ]
+                )
+            )
+            sync_state = repository.sync_state
+
+        self._repository_table.set_item(row_index, 1, item)
+        self._repository_table.clear_row_background(row_index)
+        if sync_state == "REMOTE_MISSING":
+            self._repository_table.set_row_background(row_index, "#5c1f24")
+        elif sync_state == "DIVERGED":
+            self._repository_table.set_row_background(row_index, "#5b3d12")
+        elif sync_state == "LOCAL_AHEAD":
+            self._repository_table.set_row_background(row_index, "#1f3b4d")
+        elif sync_state == "REMOTE_ONLY":
+            self._repository_table.set_row_background(row_index, "#1f2c3c")
+
     def set_local_repo_diagnostics(self, lines: list[str]) -> None:
         """
         Aktualisiert den Diagnosebereich fuer das aktuell selektierte lokale Repository.
@@ -322,6 +987,7 @@ class MainWindow(QMainWindow):
         """
 
         self._diagnostics_window.set_local_repo_diagnostics(lines)
+        self._diagnostics_panel.set_messages(lines, "Keine Repository-Diagnose vorhanden.")
 
     def set_local_repo_history(self, lines: list[str]) -> None:
         """
@@ -341,6 +1007,7 @@ class MainWindow(QMainWindow):
         """
 
         self._diagnostics_window.set_local_repo_history(lines)
+        self._history_panel.set_messages(lines, "Keine Job-Historie vorhanden.")
 
     def show_diagnostics_window(self) -> None:
         """
@@ -418,8 +1085,8 @@ class MainWindow(QMainWindow):
         - Schuetzt vor Mehrfachstarts und signalisiert den aktuellen Zustand direkt im Buttontext.
         """
 
-        self._refresh_remote_button.setEnabled(not is_loading)
-        self._refresh_remote_button.setText("Lade..." if is_loading else "Remote laden")
+        self._toolbar_refresh_all_action.setEnabled(not is_loading)
+        self._toolbar_refresh_all_action.setText("Aktualisiere..." if is_loading else "Alles aktualisieren")
 
     def set_clone_loading(self, is_loading: bool) -> None:
         """
@@ -438,8 +1105,9 @@ class MainWindow(QMainWindow):
         - Schuetzt vor parallelen Clone-Vorgaengen und macht den Zustand sichtbar.
         """
 
-        self._clone_button.setEnabled(not is_loading and bool(self._remote_repositories))
-        self._clone_button.setText("Klonen..." if is_loading else "Klonen")
+        self._toolbar_clone_action.setText("Clone..." if is_loading else "Clone")
+        if not is_loading:
+            self._update_primary_toolbar_actions()
 
     def set_commit_loading(self, is_loading: bool) -> None:
         """
@@ -458,8 +1126,9 @@ class MainWindow(QMainWindow):
         - Sperrt den Button waehrend des Workers und macht den Zustand sichtbar.
         """
 
-        self._commit_button.setEnabled(not is_loading and bool(self._local_repositories))
-        self._commit_button.setText("Commit..." if is_loading else "Commit")
+        self._toolbar_commit_action.setText("Commit..." if is_loading else "Commit")
+        if not is_loading:
+            self._update_primary_toolbar_actions()
 
     def set_push_loading(self, is_loading: bool) -> None:
         """
@@ -478,8 +1147,9 @@ class MainWindow(QMainWindow):
         - Verhindert parallele Push-Aktionen.
         """
 
-        self._push_button.setEnabled(not is_loading and bool(self._local_repositories))
-        self._push_button.setText("Push..." if is_loading else "Push")
+        self._toolbar_push_action.setText("Push..." if is_loading else "Push")
+        if not is_loading:
+            self._update_primary_toolbar_actions()
 
     def set_delete_loading(self, is_loading: bool) -> None:
         """
@@ -498,8 +1168,7 @@ class MainWindow(QMainWindow):
         - Sperrt den Delete-Button waehrend des Workers.
         """
 
-        self._delete_button.setEnabled(not is_loading and bool(self._remote_repositories))
-        self._delete_button.setText("Loesche..." if is_loading else "Remote loeschen")
+        self._update_repository_menu_actions()
 
     def set_struct_scan_loading(self, is_loading: bool) -> None:
         """
@@ -518,8 +1187,7 @@ class MainWindow(QMainWindow):
         - Der Button wird waehrend des Scans deaktiviert, damit keine Ueberlappung entsteht.
         """
 
-        self._struct_scan_button.setEnabled(not is_loading and bool(self._local_repositories))
-        self._struct_scan_button.setText("Scanne Struktur..." if is_loading else "Struktur scannen")
+        self._update_repository_menu_actions()
 
     def set_remote_filter_text(self, filter_text: str) -> None:
         """
@@ -539,6 +1207,7 @@ class MainWindow(QMainWindow):
         """
 
         self._remote_table.apply_filter(filter_text)
+        self._repository_table.apply_filter(filter_text)
 
     def set_local_filter_text(self, filter_text: str) -> None:
         """
@@ -558,6 +1227,7 @@ class MainWindow(QMainWindow):
         """
 
         self._local_table.apply_filter(filter_text)
+        self._repository_table.apply_filter(filter_text)
 
     def set_local_loading(self, is_loading: bool) -> None:
         """
@@ -576,8 +1246,8 @@ class MainWindow(QMainWindow):
         - Verhindert Mehrfachstarts und macht den aktiven Zustand sichtbar.
         """
 
-        self._scan_local_button.setEnabled(not is_loading)
-        self._scan_local_button.setText("Scanne..." if is_loading else "Lokale Repos scannen")
+        self._toolbar_refresh_all_action.setEnabled(not is_loading)
+        self._toolbar_refresh_all_action.setText("Aktualisiere..." if is_loading else "Alles aktualisieren")
 
     def upsert_local_repository(self, repository: LocalRepo) -> None:
         """
@@ -611,7 +1281,9 @@ class MainWindow(QMainWindow):
         self._local_repositories.insert(insertion_index, repository)
         self._local_table.insert_row(insertion_index, self._build_local_row_values(repository))
         self._render_local_row(insertion_index, repository)
+        self._refresh_repository_table()
         self._update_local_action_buttons()
+        self._update_repository_menu_actions()
 
     def remove_local_repository(self, local_path: str) -> None:
         """
@@ -636,7 +1308,9 @@ class MainWindow(QMainWindow):
                 continue
             del self._local_repositories[index]
             self._local_table.remove_row(index)
+            self._refresh_repository_table()
             self._update_local_action_buttons()
+            self._update_repository_menu_actions()
             if not self._local_repositories:
                 self._diagnostics_window.set_local_repo_diagnostics([])
                 self._diagnostics_window.set_local_repo_history([])
@@ -674,7 +1348,9 @@ class MainWindow(QMainWindow):
         self._remote_repositories.insert(insertion_index, repository)
         self._remote_table.insert_row(insertion_index, self._build_remote_row_values(repository))
         self._render_remote_row(insertion_index, repository)
+        self._refresh_repository_table()
         self._update_remote_action_buttons()
+        self._update_repository_menu_actions()
 
     def remove_remote_repository(self, repo_id: int) -> None:
         """
@@ -699,7 +1375,9 @@ class MainWindow(QMainWindow):
                 continue
             del self._remote_repositories[index]
             self._remote_table.remove_row(index)
+            self._refresh_repository_table()
             self._update_remote_action_buttons()
+            self._update_repository_menu_actions()
             return
 
     def _choose_target_directory(self) -> None:
@@ -745,9 +1423,15 @@ class MainWindow(QMainWindow):
         """
 
         selected_repositories: list[RemoteRepo] = []
-        for row_index in self._remote_table.checked_row_indices():
-            if 0 <= row_index < len(self._remote_repositories):
-                selected_repositories.append(self._remote_repositories[row_index])
+        for row_index in self._repository_table.checked_row_indices():
+            if not (0 <= row_index < len(self._repository_entries)):
+                continue
+            entry = self._repository_entries[row_index]
+            if entry.source_type != "remote":
+                continue
+            repository = entry.repository
+            if isinstance(repository, RemoteRepo):
+                selected_repositories.append(repository)
         return selected_repositories
 
     def selected_local_repositories(self) -> list[LocalRepo]:
@@ -768,10 +1452,105 @@ class MainWindow(QMainWindow):
         """
 
         selected_repositories: list[LocalRepo] = []
-        for row_index in self._local_table.checked_row_indices():
-            if 0 <= row_index < len(self._local_repositories):
-                selected_repositories.append(self._local_repositories[row_index])
+        for row_index in self._repository_table.checked_row_indices():
+            if not (0 <= row_index < len(self._repository_entries)):
+                continue
+            entry = self._repository_entries[row_index]
+            if entry.source_type != "local":
+                continue
+            repository = entry.repository
+            if isinstance(repository, LocalRepo):
+                selected_repositories.append(repository)
         return selected_repositories
+
+    def _open_repository_row(self, row_index: int) -> None:
+        """
+        Reagiert auf einen Doppelklick in der kombinierten Haupttabelle.
+
+        Eingabeparameter:
+        - row_index: Index der aktivierten Zeile in der sichtbaren Repository-Tabelle.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Indizes werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Methode leitet den Doppelklick auf die bestehenden Local- oder Remote-
+          Oeffnungspfade weiter, statt einen zweiten Repo-Kontext-Workflow aufzubauen.
+        """
+
+        if not (0 <= row_index < len(self._repository_entries)):
+            return
+        self._select_repository_row(row_index)
+        entry = self._repository_entries[row_index]
+        if entry.source_type == "local":
+            repository = entry.repository
+            assert isinstance(repository, LocalRepo)
+            self._open_local_row(self._local_repositories.index(repository))
+            return
+        repository = entry.repository
+        assert isinstance(repository, RemoteRepo)
+        self._open_remote_row(self._remote_repositories.index(repository))
+
+    def _select_repository_row(self, row_index: int) -> None:
+        """
+        Uebernimmt die Selektion einer sichtbaren Haupttabellenzeile in die bestehende Local-/Remote-Auswahl.
+
+        Eingabeparameter:
+        - row_index: Selektierte Zeile der kombinierten Repository-Tabelle.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Indizes werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die sichtbare Haupttabelle bleibt damit die zentrale Bedienflaeche, waehrend
+          die Fachsignale weiter in ihren etablierten Quelltypen bleiben.
+        """
+
+        if not (0 <= row_index < len(self._repository_entries)):
+            return
+        self._selected_repository_index = row_index
+        entry = self._repository_entries[row_index]
+        if entry.source_type == "local":
+            repository = entry.repository
+            assert isinstance(repository, LocalRepo)
+            self._select_local_row(self._local_repositories.index(repository))
+        else:
+            repository = entry.repository
+            assert isinstance(repository, RemoteRepo)
+            self._select_remote_row(self._remote_repositories.index(repository))
+        self._update_details_panel()
+
+    def _show_repository_context_menu(self, row_index: int) -> None:
+        """
+        Oeffnet das passende dynamische Kontextmenue fuer die sichtbare Haupttabellenzeile.
+
+        Eingabeparameter:
+        - row_index: Zeile der kombinierten Repository-Tabelle.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Indizes werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Methode verteilt nur nach Quelltyp und nutzt dann die bestehenden
+          zustandsabhaengigen Kontextmenues fuer lokale oder entfernte Repositories.
+        """
+
+        if not (0 <= row_index < len(self._repository_entries)):
+            return
+        entry = self._repository_entries[row_index]
+        if entry.source_type == "local":
+            self._show_local_context_menu(self._local_repositories.index(entry.repository))
+            return
+        self._show_remote_context_menu(self._remote_repositories.index(entry.repository))
 
     def _open_remote_row(self, row_index: int) -> None:
         """
@@ -852,6 +1631,8 @@ class MainWindow(QMainWindow):
         """
 
         if 0 <= row_index < len(self._local_repositories):
+            self._selected_local_index = row_index
+            self._selection_source = "local"
             repository = self._local_repositories[row_index]
             self.local_repo_selected.emit(
                 {
@@ -861,6 +1642,108 @@ class MainWindow(QMainWindow):
                     "remote_url": repository.remote_url,
                 }
             )
+            self._update_repository_menu_actions()
+            self._update_primary_toolbar_actions()
+            self._update_details_panel()
+
+    def _select_remote_row(self, row_index: int) -> None:
+        """
+        Meldet die aktuell selektierte Remote-Tabellenzeile an den Controller und aktualisiert Menues.
+
+        Eingabeparameter:
+        - row_index: Selektierte Tabellenzeile.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Indizes werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die zuletzt aktive Selektion steuert die dynamische Menueaktivierung fuer
+          repository-bezogene Aktionen im Hauptmenue.
+        """
+
+        if 0 <= row_index < len(self._remote_repositories):
+            self._selected_remote_index = row_index
+            self._selection_source = "remote"
+            repository = self._remote_repositories[row_index]
+            self.remote_repo_selected.emit(
+                {
+                    "repo_id": repository.repo_id,
+                    "repo_name": repository.name,
+                    "repo_owner": repository.owner,
+                    "remote_url": repository.html_url,
+                }
+            )
+            self._update_repository_menu_actions()
+            self._update_primary_toolbar_actions()
+            self._update_details_panel()
+
+    def _update_details_panel(self) -> None:
+        """
+        Aktualisiert das sichtbare Repository-Details-Panel fuer die aktuelle Selektion.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine; fehlende Selektion fuehrt zu einem Platzhaltertext.
+
+        Wichtige interne Logik:
+        - Das Panel zeigt bewusst eine kompakte, sofort lesbare Zusammenfassung statt
+          den vollstaendigen RepoViewer zu duplizieren.
+        """
+
+        if self._selection_source == "local":
+            repository = self._current_local_repository()
+            if repository is None:
+                self._details_panel.set_messages([], "Kein Repository ausgewaehlt.")
+                return
+            self._details_panel.set_messages(
+                [
+                    f"Quelle: Lokal",
+                    f"Name: {repository.name}",
+                    f"Pfad: {repository.full_path}",
+                    f"Branch: {repository.current_branch or '-'}",
+                    f"Sync State: {repository.sync_state or repository.remote_status}",
+                    f"Ahead / Behind: {repository.ahead_count} / {repository.behind_count}",
+                    f"Health: {repository.health_state or '-'}",
+                    f"Recommended Action: {repository.recommended_action or '-'}",
+                    f"Remote URL: {repository.remote_url or '-'}",
+                    f"Last Checked: {repository.last_checked_at or '-'}",
+                ],
+                "Kein Repository ausgewaehlt.",
+            )
+            return
+
+        if self._selection_source == "remote":
+            repository = self._current_remote_repository()
+            if repository is None:
+                self._details_panel.set_messages([], "Kein Repository ausgewaehlt.")
+                return
+            self._details_panel.set_messages(
+                [
+                    "Quelle: Remote",
+                    f"Name: {repository.full_name or repository.name}",
+                    f"Owner: {repository.owner or '-'}",
+                    f"Linked Local Path: {repository.linked_local_path or '-'}",
+                    f"Branch: {repository.default_branch or '-'}",
+                    f"Sync State: {repository.sync_state or '-'}",
+                    f"Ahead / Behind: {repository.ahead_count} / {repository.behind_count}",
+                    f"Health: {repository.health_state or '-'}",
+                    f"Recommended Action: {repository.recommended_action or '-'}",
+                    f"Visibility: {repository.visibility or '-'}",
+                    f"Updated: {repository.updated_at or '-'}",
+                ],
+                "Kein Repository ausgewaehlt.",
+            )
+            return
+
+        self._details_panel.set_messages([], "Kein Repository ausgewaehlt.")
 
     def get_remote_repositories(self) -> list[RemoteRepo]:
         """
@@ -881,6 +1764,48 @@ class MainWindow(QMainWindow):
 
         return list(self._remote_repositories)
 
+    def _current_local_repository(self) -> LocalRepo | None:
+        """
+        Liefert das aktuell ausgewaehlte lokale Repository oder `None`.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Aktuell selektiertes LocalRepo oder `None`.
+
+        Moegliche Fehlerfaelle:
+        - Keine; ungueltige oder fehlende Selektion liefert `None`.
+
+        Wichtige interne Logik:
+        - Die Hilfsmethode entkoppelt Menue- und Kontextlogik von rohen Tabellenindizes.
+        """
+
+        if 0 <= self._selected_local_index < len(self._local_repositories):
+            return self._local_repositories[self._selected_local_index]
+        return None
+
+    def _current_remote_repository(self) -> RemoteRepo | None:
+        """
+        Liefert das aktuell ausgewaehlte Remote-Repository oder `None`.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Aktuell selektiertes RemoteRepo oder `None`.
+
+        Moegliche Fehlerfaelle:
+        - Keine; ungueltige oder fehlende Selektion liefert `None`.
+
+        Wichtige interne Logik:
+        - Die Hilfsmethode entkoppelt Menue- und Kontextlogik von rohen Tabellenindizes.
+        """
+
+        if 0 <= self._selected_remote_index < len(self._remote_repositories):
+            return self._remote_repositories[self._selected_remote_index]
+        return None
+
     def get_local_repositories(self) -> list[LocalRepo]:
         """
         Liefert die aktuell im Hauptfenster gehaltenen lokalen Repositories.
@@ -900,28 +1825,214 @@ class MainWindow(QMainWindow):
 
         return list(self._local_repositories)
 
-    def _format_online_state(self, remote_exists_online: int | None) -> str:
+    def current_repository_selection(self):
         """
-        Uebersetzt den Online-Zustand eines Remotes in eine kurze Tabellenanzeige.
+        Liefert die aktuelle Repository-Selektion des Hauptfensters als Quelle plus Referenz.
 
         Eingabeparameter:
-        - remote_exists_online: `1`, `0` oder `None` aus dem State-Layer.
+        - Keine.
 
         Rueckgabewerte:
-        - Kurzer UI-String fuer die lokale Tabelle.
+        - Tupel aus Quelltyp (`local`, `remote` oder Leerstring) und Referenzdictionary oder `None`.
+
+        Moegliche Fehlerfaelle:
+        - Keine; fehlende Selektion liefert eine leere Quelle und `None`.
+
+        Wichtige interne Logik:
+        - Der MainController kann dadurch menuebasierte Aktionen ausloesen, ohne auf
+          interne Tabellenindizes des Fensters zugreifen zu muessen.
+        """
+
+        return self._selection_source, self._current_repository_reference()
+
+    def _update_repository_menu_actions(self) -> None:
+        """
+        Aktiviert oder deaktiviert Repository-Menuepunkte anhand der aktuellen Selektion.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
 
         Moegliche Fehlerfaelle:
         - Keine.
 
         Wichtige interne Logik:
-        - Die Anzeige bleibt knapp, damit die eigentliche Fachlogik im Controller liegt.
+        - Das Menue liest seine Aktivierung ausschliesslich aus den bereits zentral
+          aufgeloesten `available_actions` der selektierten Repository-Modelle.
         """
 
-        if remote_exists_online == 1:
-            return "Ja"
-        if remote_exists_online == 0:
-            return "Nein"
-        return "Unbekannt"
+        current_actions = set(self._current_repository_action_ids())
+        selection_available = bool(current_actions) or self._current_repository_reference() is not None
+        always_allowed = {"open_repository", "open_repo_explorer", "show_history", "show_diagnostics"}
+        supported_actions = {
+            "open_repository",
+            "show_in_explorer",
+            "clone",
+            "pull",
+            "push",
+            "commit",
+            "create_remote",
+            "repair_remote",
+            "remove_remote",
+            "reinitialize_repository",
+            "resolve_divergence",
+            "open_repo_explorer",
+            "show_history",
+            "show_diagnostics",
+            "set_private",
+            "set_public",
+            "refresh_repository",
+        }
+        for action_id, action in self._repository_menu_actions.items():
+            action.setEnabled(
+                selection_available
+                and action_id in supported_actions
+                and (action_id in always_allowed or action_id in current_actions)
+            )
+
+    def _update_primary_toolbar_actions(self) -> None:
+        """
+        Aktiviert die sichtbaren Toolbar-Aktionen anhand des aktuell selektierten Repository-Zustands.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Toolbar zeigt nur die wichtigsten Primaeraktionen und liest ihre Aktivierung
+          aus denselben `available_actions` wie Menue und Kontextmenue.
+        """
+
+        current_actions = set(self._current_repository_action_ids())
+        self._toolbar_refresh_all_action.setEnabled(True)
+        self._toolbar_pull_action.setEnabled("pull" in current_actions)
+        self._toolbar_push_action.setEnabled("push" in current_actions)
+        self._toolbar_commit_action.setEnabled("commit" in current_actions)
+        self._toolbar_clone_action.setEnabled("clone" in current_actions)
+        self._toolbar_publish_action.setEnabled("create_remote" in current_actions)
+
+    def _current_repository_action_ids(self) -> list[str]:
+        """
+        Liefert die verfuegbaren technischen Aktionen der aktuellen Selektion.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Liste technischer Aktions-IDs fuer das aktive Repository.
+
+        Moegliche Fehlerfaelle:
+        - Keine; fehlende Selektion liefert eine leere Liste.
+
+        Wichtige interne Logik:
+        - Die Methode bildet die Bruecke zwischen Resolver-Ergebnis in den View-Modellen
+          und der dynamischen Menue-/Kontextsteuerung im Hauptfenster.
+        """
+
+        if self._selection_source == "local":
+            repository = self._current_local_repository()
+            return list(repository.available_actions) if repository is not None else []
+        if self._selection_source == "remote":
+            repository = self._current_remote_repository()
+            return list(repository.available_actions) if repository is not None else []
+        return []
+
+    def _current_repository_reference(self):
+        """
+        Liefert die fachliche Referenz des aktuell selektierten Repositorys fuer Signal-Emissionen.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Referenzdictionary fuer Controller oder `None`.
+
+        Moegliche Fehlerfaelle:
+        - Keine; fehlende Selektion liefert `None`.
+
+        Wichtige interne Logik:
+        - Die Methode zentralisiert die Referenzbildung, damit Menue und Kontextmenue
+          keine separaten Sonderpfade fuer dieselbe Auswahl pflegen.
+        """
+
+        if self._selection_source == "local":
+            repository = self._current_local_repository()
+            if repository is None:
+                return None
+            return {
+                "repo_name": repository.name,
+                "local_path": repository.full_path,
+                "remote_repo_id": repository.remote_repo_id,
+                "remote_url": repository.remote_url,
+                "remote_status": repository.remote_status,
+            }
+        if self._selection_source == "remote":
+            repository = self._current_remote_repository()
+            if repository is None:
+                return None
+            return {
+                "repo_id": repository.repo_id,
+                "repo_name": repository.name,
+                "repo_owner": repository.owner,
+                "repo_full_name": repository.full_name,
+                "remote_url": repository.html_url,
+                "clone_url": repository.clone_url,
+                "visibility": repository.visibility,
+            }
+        return None
+
+    def _trigger_repository_action(self, action_id: str) -> None:
+        """
+        Leitet eine menueausgeloeste Repository-Aktion an das passende Signal oder die passende UI-Hilfe weiter.
+
+        Eingabeparameter:
+        - action_id: Technische Aktions-ID aus Menue oder Kontextmenue.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Fehlende oder ungueltige Selektionen werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Methode bleibt rein koordinierend und fuehrt keine Repository-Fachlogik
+          direkt im Hauptfenster aus.
+        """
+
+        repo_ref = self._current_repository_reference()
+        if repo_ref is None:
+            return
+
+        if self._selection_source == "local":
+            if action_id == "refresh_repository":
+                self.refresh_selected_repository_requested.emit()
+                return
+            if action_id in {"open_repository", "open_repo_explorer", "show_history", "show_diagnostics"}:
+                self.local_repo_open_requested.emit(repo_ref, "local")
+                return
+            if action_id == "show_in_explorer":
+                local_path = repo_ref.get("local_path")
+                if local_path:
+                    os.startfile(local_path)  # type: ignore[attr-defined]
+                return
+            self.local_repo_action_requested.emit(repo_ref, action_id)
+            return
+
+        if self._selection_source == "remote":
+            if action_id == "refresh_repository":
+                self.refresh_selected_repository_requested.emit()
+                return
+            if action_id in {"open_repository", "open_repo_explorer", "show_history", "show_diagnostics"}:
+                self.remote_repo_open_requested.emit(repo_ref, "remote")
+                return
+            self.remote_repo_action_requested.emit(repo_ref, action_id)
 
     def _build_remote_row_values(self, repository: RemoteRepo) -> list[str]:
         """
@@ -944,12 +2055,13 @@ class MainWindow(QMainWindow):
             "",
             repository.name,
             repository.owner,
-            repository.visibility,
+            repository.linked_local_path or "-",
             repository.default_branch,
-            repository.language,
-            "Ja" if repository.archived else "Nein",
-            "Ja" if repository.fork else "Nein",
-            repository.updated_at,
+            repository.sync_state,
+            repository.health_state,
+            repository.recommended_action,
+            repository.visibility,
+            repository.updated_at or "-",
         ]
 
     def _render_remote_row(self, row_index: int, repository: RemoteRepo) -> None:
@@ -975,6 +2087,10 @@ class MainWindow(QMainWindow):
         self._remote_table.clear_row_background(row_index)
         if repository.archived:
             self._remote_table.set_row_background(row_index, "#3a3a3a")
+        elif repository.sync_state == "REMOTE_ONLY":
+            self._remote_table.set_row_background(row_index, "#1f2c3c")
+        elif repository.sync_state == "DIVERGED":
+            self._remote_table.set_row_background(row_index, "#5b3d12")
 
     def _find_remote_insert_index(self, repository: RemoteRepo) -> int:
         """
@@ -1019,9 +2135,7 @@ class MainWindow(QMainWindow):
           Updates dasselbe Verhalten fuer die Toolbar nutzen.
         """
 
-        has_remote = bool(self._remote_repositories)
-        self._clone_button.setEnabled(has_remote)
-        self._delete_button.setEnabled(has_remote)
+        self._update_primary_toolbar_actions()
 
     def _build_local_row_values(self, repository: LocalRepo) -> list[str]:
         """
@@ -1043,14 +2157,15 @@ class MainWindow(QMainWindow):
         return [
             "",
             repository.name,
-            "",
+            repository.owner or "-",
+            repository.full_path,
             repository.current_branch,
-            "Ja" if repository.has_remote else "Nein",
-            repository.remote_status,
-            self._format_online_state(repository.remote_exists_online),
+            repository.sync_state or repository.remote_status,
+            str(repository.ahead_count),
+            str(repository.behind_count),
+            repository.health_state,
             repository.recommended_action,
-            f"Ja ({repository.modified_count}+{repository.untracked_count})" if repository.has_changes else "Nein",
-            f"{repository.last_commit_hash} {repository.last_commit_date}",
+            repository.last_checked_at or repository.last_commit_date or "-",
         ]
 
     def _render_local_row(self, row_index: int, repository: LocalRepo) -> None:
@@ -1073,12 +2188,15 @@ class MainWindow(QMainWindow):
         """
 
         self._local_table.set_item(row_index, 1, self._build_local_name_item(repository))
-        self._local_table.set_cell_widget(row_index, 2, self._build_public_checkbox(repository))
         self._local_table.clear_row_background(row_index)
         if not repository.exists_local:
             self._local_table.set_row_background(row_index, "#3a3a3a")
-        elif repository.remote_status == "REMOTE_MISSING":
+        elif repository.sync_state == "REMOTE_MISSING":
             self._local_table.set_row_background(row_index, "#5c1f24")
+        elif repository.sync_state == "DIVERGED":
+            self._local_table.set_row_background(row_index, "#5b3d12")
+        elif repository.sync_state == "LOCAL_AHEAD":
+            self._local_table.set_row_background(row_index, "#1f3b4d")
 
     def _find_local_insert_index(self, repository: LocalRepo) -> int:
         """
@@ -1122,10 +2240,7 @@ class MainWindow(QMainWindow):
           dieselbe Button-Logik verwenden.
         """
 
-        has_local = bool(self._local_repositories)
-        self._commit_button.setEnabled(has_local)
-        self._push_button.setEnabled(has_local)
-        self._struct_scan_button.setEnabled(has_local)
+        self._update_primary_toolbar_actions()
 
     def _build_local_name_item(self, repository: LocalRepo):
         """
@@ -1244,33 +2359,49 @@ class MainWindow(QMainWindow):
         if not (0 <= row_index < len(self._local_repositories)):
             return
 
+        self._select_local_row(row_index)
         repository = self._local_repositories[row_index]
-        repo_ref = {
-            "repo_name": repository.name,
-            "local_path": repository.full_path,
-            "remote_url": repository.remote_url,
-            "remote_status": repository.remote_status,
-        }
-
         menu = QMenu(self)
-        action_label_map = {
-            "repair_remote": "Repair remote",
-            "remove_remote": "Remove remote",
-            "create_remote": "Create GitHub repository",
-            "reinitialize_repository": "Reinitialize repository",
-        }
         menu_actions: dict[str, object] = {}
-        for action_name in repository.available_actions:
-            label = action_label_map.get(action_name)
-            if not label:
-                continue
-            menu_actions[action_name] = menu.addAction(label)
-        if not menu_actions:
-            return
+        supported_actions = {
+            "pull",
+            "commit",
+            "push",
+            "review_changes",
+            "stash_changes",
+            "create_remote",
+            "repair_remote",
+            "remove_remote",
+            "reinitialize_repository",
+            "resolve_divergence",
+            "refresh_repository",
+            "open_repository",
+            "show_in_explorer",
+            "open_repo_explorer",
+            "show_history",
+            "show_diagnostics",
+        }
+        for action_name in ("open_repository", "show_in_explorer", "open_repo_explorer", "show_history", "show_diagnostics"):
+            menu_actions[action_name] = menu.addAction(self._action_label(action_name))
+        menu.addSeparator()
+        destructive_actions = {"remove_remote", "reinitialize_repository", "delete_local_repository"}
+        normal_actions = [
+            action_name
+            for action_name in repository.available_actions
+            if action_name not in destructive_actions and action_name in supported_actions
+        ]
+        for action_name in normal_actions:
+            menu_actions[action_name] = menu.addAction(self._action_label(action_name))
+        if destructive_actions.intersection(repository.available_actions):
+            menu.addSeparator()
+            for action_name in repository.available_actions:
+                if action_name not in destructive_actions:
+                    continue
+                menu_actions[action_name] = menu.addAction(self._action_label(action_name))
         selected_action = menu.exec(self.cursor().pos())
         for action_name, action in menu_actions.items():
             if selected_action == action:
-                self.local_repo_action_requested.emit(repo_ref, action_name)
+                self._trigger_repository_action(action_name)
                 return
 
     def _show_remote_context_menu(self, row_index: int) -> None:
@@ -1294,35 +2425,23 @@ class MainWindow(QMainWindow):
         if not (0 <= row_index < len(self._remote_repositories)):
             return
 
+        self._select_remote_row(row_index)
         repository = self._remote_repositories[row_index]
-        repo_ref = {
-            "repo_id": repository.repo_id,
-            "repo_name": repository.name,
-            "repo_owner": repository.owner,
-            "remote_url": repository.html_url,
-            "visibility": repository.visibility,
-        }
-
         menu = QMenu(self)
+        menu_actions: dict[str, object] = {}
         current_visibility_action = menu.addAction(f"Aktuell: {repository.visibility}")
         current_visibility_action.setEnabled(False)
         menu.addSeparator()
-
-        action_label_map = {
-            "set_private": "Auf private setzen",
-            "set_public": "Auf public setzen",
-        }
-        menu_actions: dict[str, object] = {}
+        for action_name in ("open_repository", "open_repo_explorer", "show_history", "show_diagnostics"):
+            menu_actions[action_name] = menu.addAction(self._action_label(action_name))
+        menu.addSeparator()
+        supported_actions = {"clone", "set_private", "set_public"}
         for action_name in repository.available_actions:
-            label = action_label_map.get(action_name)
-            if not label:
+            if action_name not in supported_actions:
                 continue
-            menu_actions[action_name] = menu.addAction(label)
-        if not menu_actions:
-            return
-
+            menu_actions[action_name] = menu.addAction(self._action_label(action_name))
         selected_action = menu.exec(self.cursor().pos())
         for action_name, action in menu_actions.items():
             if selected_action == action:
-                self.remote_repo_action_requested.emit(repo_ref, action_name)
+                self._trigger_repository_action(action_name)
                 return

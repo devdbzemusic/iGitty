@@ -131,3 +131,138 @@ def test_main_window_upserts_and_removes_remote_repository_without_full_rebuild(
     window.remove_remote_repository(7)
 
     assert window.get_remote_repositories() == []
+
+
+def test_main_window_enables_repository_menu_actions_based_on_selection() -> None:
+    """
+    Prueft, dass das Repository-Menue seine Aktionen an den aktuellen Repo-Zustand anpasst.
+    """
+
+    _get_or_create_application()
+    window = MainWindow()
+    local_repository = _build_local_repo(
+        sync_state="LOCAL_AHEAD",
+        remote_status="LOCAL_AHEAD",
+        available_actions=["push", "open_repository", "show_diagnostics"],
+    )
+    remote_repository = _build_remote_repo(
+        available_actions=["clone", "set_private"],
+    )
+
+    window.populate_local_repositories([local_repository])
+    window.populate_remote_repositories([remote_repository])
+
+    window._select_local_row(0)  # noqa: SLF001
+    assert window._repository_menu_actions["push"].isEnabled() is True  # noqa: SLF001
+    assert window._repository_menu_actions["clone"].isEnabled() is False  # noqa: SLF001
+
+    window._select_remote_row(0)  # noqa: SLF001
+    assert window._repository_menu_actions["clone"].isEnabled() is True  # noqa: SLF001
+    assert window._repository_menu_actions["push"].isEnabled() is False  # noqa: SLF001
+
+
+def test_main_window_builds_requested_menu_structure() -> None:
+    """
+    Prueft, dass die Hauptmenues des Redesigns sichtbar vorhanden sind.
+    """
+
+    _get_or_create_application()
+    window = MainWindow()
+
+    menu_labels = [action.text() for action in window.menuBar().actions()]
+
+    assert menu_labels == [
+        "Datei",
+        "Synchronisieren",
+        "Repository",
+        "Analyse",
+        "Ansicht",
+        "Hilfe",
+    ]
+
+
+def test_main_window_combines_local_and_remote_rows_in_primary_table() -> None:
+    """
+    Prueft, dass die sichtbare Haupttabelle lokale und reine Remote-Repositories gemeinsam anzeigt.
+    """
+
+    _get_or_create_application()
+    window = MainWindow()
+    local_repository = _build_local_repo(name="alpha", full_path="C:/alpha")
+    remote_repository = _build_remote_repo(
+        repo_id=11,
+        name="beta",
+        full_name="dbzs/beta",
+        clone_url="https://github.com/dbzs/beta.git",
+        html_url="https://github.com/dbzs/beta",
+    )
+
+    window.populate_local_repositories([local_repository])
+    window.populate_remote_repositories([remote_repository])
+
+    assert window._repository_table.row_count() == 2  # noqa: SLF001
+    assert len(window._repository_entries) == 2  # noqa: SLF001
+    assert window._repository_entries[0].source_type == "local"  # noqa: SLF001
+    assert window._repository_entries[1].source_type == "remote"  # noqa: SLF001
+
+
+def test_main_window_updates_toolbar_actions_from_selected_repository_state() -> None:
+    """
+    Prueft, dass die Primaeraktionen der Toolbar nur fuer sinnvolle Repository-Zustaende aktiv sind.
+    """
+
+    _get_or_create_application()
+    window = MainWindow()
+    local_repository = _build_local_repo(
+        sync_state="LOCAL_AHEAD",
+        remote_status="LOCAL_AHEAD",
+        available_actions=["push", "commit", "open_repository"],
+    )
+    remote_repository = _build_remote_repo(
+        repo_id=13,
+        name="gamma",
+        full_name="dbzs/gamma",
+        available_actions=["clone"],
+    )
+
+    window.populate_local_repositories([local_repository])
+    window.populate_remote_repositories([remote_repository])
+
+    window._select_local_row(0)  # noqa: SLF001
+    assert window._toolbar_push_action.isEnabled() is True  # noqa: SLF001
+    assert window._toolbar_commit_action.isEnabled() is True  # noqa: SLF001
+    assert window._toolbar_clone_action.isEnabled() is False  # noqa: SLF001
+
+    window._select_remote_row(0)  # noqa: SLF001
+    assert window._toolbar_clone_action.isEnabled() is True  # noqa: SLF001
+    assert window._toolbar_push_action.isEnabled() is False  # noqa: SLF001
+
+
+def test_main_window_enables_pull_and_divergence_actions_when_state_requires_it() -> None:
+    """
+    Prueft, dass Pull- und Divergenz-Aktionen in Menue und Toolbar aus den verfuegbaren Aktionen aktiviert werden.
+    """
+
+    _get_or_create_application()
+    window = MainWindow()
+    remote_ahead_repository = _build_local_repo(
+        sync_state="REMOTE_AHEAD",
+        remote_status="REMOTE_AHEAD",
+        available_actions=["pull", "show_diagnostics"],
+    )
+    diverged_repository = _build_local_repo(
+        name="diverged",
+        full_path="C:/diverged",
+        sync_state="DIVERGED",
+        remote_status="DIVERGED",
+        available_actions=["resolve_divergence", "show_diagnostics"],
+    )
+
+    window.populate_local_repositories([remote_ahead_repository, diverged_repository])
+
+    window._select_local_row(0)  # noqa: SLF001
+    assert window._repository_menu_actions["pull"].isEnabled() is True  # noqa: SLF001
+    assert window._toolbar_pull_action.isEnabled() is True  # noqa: SLF001
+
+    window._select_local_row(1)  # noqa: SLF001
+    assert window._repository_menu_actions["resolve_divergence"].isEnabled() is True  # noqa: SLF001

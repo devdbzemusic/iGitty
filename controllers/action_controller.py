@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
+from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtWidgets import QMessageBox
@@ -14,6 +16,7 @@ from services.commit_service import CommitService
 from services.git_service import GitService
 from services.push_service import PushService
 from services.repo_struct_service import RepoStructService
+from services.repository_snapshot_service import RepositorySnapshotService
 from ui.dialogs.commit_dialog import CommitDialog
 from ui.dialogs.create_remote_dialog import CreateRemoteDialog
 from ui.main_window import MainWindow
@@ -34,6 +37,7 @@ class ActionController:
         repo_struct_service: RepoStructService,
         job_log_repository: JobLogRepository,
         logger: AppLogger,
+        repository_snapshot_service: RepositorySnapshotService | None = None,
         post_action_refresh_callback=None,
         post_single_repo_refresh_callback=None,
     ) -> None:
@@ -48,6 +52,7 @@ class ActionController:
         self._repo_struct_service = repo_struct_service
         self._job_log_repository = job_log_repository
         self._logger = logger
+        self._repository_snapshot_service = repository_snapshot_service
         self._post_action_refresh_callback = post_action_refresh_callback
         self._post_single_repo_refresh_callback = post_single_repo_refresh_callback
         self._commit_worker: CommitWorker | None = None
@@ -69,19 +74,7 @@ class ActionController:
             self._window.append_log_line("Kein lokales Repository fuer Commit ausgewaehlt.")
             return
 
-        dialog = CommitDialog(self._window)
-        if dialog.exec() == 0:
-            return
-        message, stage_all = dialog.get_values()
-        if not message:
-            QMessageBox.warning(self._window, "Commit", "Eine Commit-Nachricht ist erforderlich.")
-            return
-
-        self._window.set_commit_loading(True)
-        self._commit_worker = CommitWorker(self._commit_service, repositories, message, stage_all, str(uuid4()))
-        self._commit_worker.finished_with_results.connect(self._on_action_results)
-        self._commit_worker.failed.connect(self._on_commit_failed)
-        self._commit_worker.start()
+        self._start_commit_for_repositories(repositories)
 
     def push_selected_repositories(self) -> None:
         """
@@ -108,18 +101,7 @@ class ActionController:
                 return
             remote_private, description = dialog.get_values()
 
-        self._window.set_push_loading(True)
-        self._push_worker = PushWorker(
-            self._push_service,
-            repositories,
-            create_remote,
-            remote_private,
-            description,
-            str(uuid4()),
-        )
-        self._push_worker.finished_with_results.connect(self._on_action_results)
-        self._push_worker.failed.connect(self._on_push_failed)
-        self._push_worker.start()
+        self._start_push_for_repositories(repositories, create_remote, remote_private, description)
 
     def scan_selected_repositories_structure(self) -> None:
         """
@@ -169,6 +151,13 @@ class ActionController:
                 if not result.local_path or result.local_path in refreshed_paths:
                     continue
                 self._post_single_repo_refresh_callback(result.local_path)
+                if result.status == "success" and self._repository_snapshot_service is not None:
+                    self._repository_snapshot_service.capture_snapshot_for_local_path(
+                        result.local_path,
+                        trigger_type=result.action_type,
+                        force=True,
+                        job_id=result.job_id,
+                    )
                 refreshed_paths.add(result.local_path)
 
         if callable(self._post_action_refresh_callback):
@@ -215,6 +204,69 @@ class ActionController:
             if action_name == "remove_remote":
                 self._push_service.remove_remote_and_keep_local(repository)
                 self._window.append_log_line(f"Remote fuer '{repository.name}' wurde entfernt.")
+            elif action_name == "pull":
+                QMessageBox.information(
+                    self._window,
+                    "Pull",
+                    (
+                        "Ein sicherer Pull-Workflow ist in diesem Stand noch nicht implementiert.\n\n"
+                        "Bitte pruefe Diagnose und Historie des Repositories, bevor ein spaeterer "
+                        "Pull- oder Merge-Pfad verwendet wird."
+                    ),
+                )
+                self._window.append_log_line(
+                    f"Pull wurde fuer '{repository.name}' angefordert, ist aber bewusst noch nicht automatisiert."
+                )
+                return
+            elif action_name == "commit":
+                self._start_commit_for_repositories([repository])
+                return
+            elif action_name == "push":
+                if not self._handle_push_preconditions([repository]):
+                    return
+                create_remote = not repository.has_remote
+                remote_private = False
+                description = ""
+                if create_remote:
+                    dialog = CreateRemoteDialog(
+                        repository.name,
+                        initial_private=False,
+                        parent=self._window,
+                    )
+                    if dialog.exec() == 0:
+                        return
+                    remote_private, description = dialog.get_values()
+                self._start_push_for_repositories([repository], create_remote, remote_private, description)
+                return
+            elif action_name in {"open_repository", "open_repo_explorer", "show_history", "show_diagnostics"}:
+                self._window.local_repo_open_requested.emit(repo_ref, "local")
+                return
+            elif action_name == "show_in_explorer":
+                os.startfile(Path(repository.full_path))  # type: ignore[attr-defined]
+                return
+            elif action_name in {"review_changes", "stash_changes", "resolve_divergence"}:
+                action_label = {
+                    "review_changes": "Aenderungen pruefen",
+                    "stash_changes": "Aenderungen sichern",
+                    "resolve_divergence": "Divergenz aufloesen",
+                }[action_name]
+                QMessageBox.information(
+                    self._window,
+                    action_label,
+                    (
+                        f"Die Aktion '{action_label}' ist aus Sicherheitsgruenden noch nicht direkt automatisiert.\n\n"
+                        "Nutze vorerst Diagnose, Historie und Repo Explorer fuer die manuelle Analyse."
+                    ),
+                )
+                self._window.append_log_line(
+                    f"Kontextaktion '{action_name}' fuer '{repository.name}' wurde sicherheitsbedingt nur angezeigt."
+                )
+                return
+            elif action_name == "refresh_repository":
+                if callable(self._post_single_repo_refresh_callback):
+                    self._post_single_repo_refresh_callback(repository.full_path)
+                self._window.append_log_line(f"Repository '{repository.name}' wurde zur Einzelaktualisierung vorgemerkt.")
+                return
             elif action_name == "reinitialize_repository":
                 self._push_service.reinitialize_repository(repository)
                 self._window.append_log_line(f"Repository '{repository.name}' wurde neu initialisiert.")
@@ -318,6 +370,78 @@ class ActionController:
         elif clicked == keep_button:
             self._window.append_log_line(f"'{repository.name}' bleibt vorerst lokal unveraendert.")
         return False
+
+    def _start_commit_for_repositories(self, repositories) -> None:
+        """
+        Startet einen Commit-Workflow fuer eine vorgegebene Repository-Liste.
+
+        Eingabeparameter:
+        - repositories: Ein oder mehrere lokale Repository-Modelle.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Abgebrochene Dialoge oder fehlende Commit-Nachricht stoppen den Ablauf defensiv.
+
+        Wichtige interne Logik:
+        - Die Hilfsmethode wird sowohl fuer Batch-Buttons als auch fuer zustandsabhaengige
+          Einzelaktionen aus Menues und Kontextmenues verwendet.
+        """
+
+        dialog = CommitDialog(self._window)
+        if dialog.exec() == 0:
+            return
+        message, stage_all = dialog.get_values()
+        if not message:
+            QMessageBox.warning(self._window, "Commit", "Eine Commit-Nachricht ist erforderlich.")
+            return
+
+        self._window.set_commit_loading(True)
+        self._commit_worker = CommitWorker(self._commit_service, repositories, message, stage_all, str(uuid4()))
+        self._commit_worker.finished_with_results.connect(self._on_action_results)
+        self._commit_worker.failed.connect(self._on_commit_failed)
+        self._commit_worker.start()
+
+    def _start_push_for_repositories(
+        self,
+        repositories,
+        create_remote: bool,
+        remote_private: bool,
+        description: str,
+    ) -> None:
+        """
+        Startet einen Push-Workflow fuer eine vorgegebene Repository-Liste.
+
+        Eingabeparameter:
+        - repositories: Ein oder mehrere lokale Repository-Modelle.
+        - create_remote: Kennzeichnet, ob vor dem Push ein GitHub-Repository angelegt werden soll.
+        - remote_private: Sichtbarkeitsflag fuer ein neu anzulegendes Remote-Repository.
+        - description: Optionale Beschreibung fuer ein neu anzulegendes Remote-Repository.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Fehler des Push-Workers werden ueber die bestehende Fehlerbehandlung gemeldet.
+
+        Wichtige interne Logik:
+        - Die Hilfsmethode vermeidet duplizierte Worker-Initialisierung zwischen Toolbar,
+          Kontextmenue und spaeteren menuebasierten Einzelaktionen.
+        """
+
+        self._window.set_push_loading(True)
+        self._push_worker = PushWorker(
+            self._push_service,
+            repositories,
+            create_remote,
+            remote_private,
+            description,
+            str(uuid4()),
+        )
+        self._push_worker.finished_with_results.connect(self._on_action_results)
+        self._push_worker.failed.connect(self._on_push_failed)
+        self._push_worker.start()
 
     def _resolve_local_repository(self, repo_ref) -> object | None:
         """

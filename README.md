@@ -29,6 +29,7 @@ Der neue State-Layer speichert den lokalen Scan-Zustand getrennt von Job-Log und
 
 - `repositories`: Repository-Stammdaten plus Fingerprints, Soft-Delete-/Missing-Marker und letzte Sichtung
 - `repo_status`: volatile Zustandsdaten wie Sync-State, Dirty-Hint, Ahead/Behind und `needs_rescan`
+- `repo_links`: persistierte Pairing-Verknuepfungen zwischen lokalen und GitHub-Repositories
 - `repo_files`: deltafaehiger Dateiindex pro Repository mit `is_deleted`-Markern statt Vollersetzung
 - `repo_status_events`: technische Zustandsereignisse wie lokale Scans oder Remote-Validierungen
 - `scan_runs`: Statistik fuer Normal- und Hard-Refresh-Laeufe
@@ -53,22 +54,77 @@ STUFE 2 nutzt die State-DB jetzt fuer beide Hauptlisten aktiv:
 - nur geaenderte oder entfernte Zeilen werden gezielt aktualisiert
 - lokale und Remote-Kontextaktionen werden zentral aus Zustand und Regeln abgeleitet
 
+## Pairing und Sync
+
+Die Anwendung behandelt lokale und entfernte Repositories jetzt als technische Paare, sobald eine belastbare Verknuepfung vorliegt.
+
+Die Pairing-Prioritaet ist:
+
+- exakte Remote-URL
+- bekannte GitHub-Repository-ID
+- Owner/Repository-Name
+- rein diagnostischer Name-Match als unsicherer Hinweis
+
+Der zentrale Sync-Analyzer berechnet dabei unter anderem:
+
+- `local_head_commit`
+- `remote_head_commit`
+- `merge_base_commit`
+- `ahead_count`
+- `behind_count`
+- `has_uncommitted_changes`
+- `sync_state`
+- `health_state`
+- `recommended_action`
+
+Aktuell verwendete Sync-Zustaende:
+
+- `LOCAL_ONLY`
+- `REMOTE_ONLY`
+- `IN_SYNC`
+- `LOCAL_AHEAD`
+- `REMOTE_AHEAD`
+- `DIVERGED`
+- `UNCOMMITTED_LOCAL_CHANGES`
+- `REMOTE_MISSING`
+- `LOCAL_MISSING`
+- `BROKEN_REMOTE`
+- `AUTH_REQUIRED`
+- `NOT_INITIALIZED`
+
 ## Lokale Tabelle
 
 Die lokale Repository-Tabelle zeigt jetzt zusaetzlich:
 
-- `Remote Status`
-- `Online`
+- `Owner`
+- `Local Path`
+- `Sync State`
+- `Ahead`
+- `Behind`
+- `Health`
 - `Recommended Action`
+- `Last Checked`
 
-`REMOTE_MISSING`-Zeilen werden markiert. Ueber das Kontextmenue einer lokalen Zeile stehen diese Reparaturpfade bereit:
+Problematische Sync-Zustaende wie `REMOTE_MISSING`, `DIVERGED` oder `LOCAL_AHEAD` werden farblich markiert. Ueber das Kontextmenue einer lokalen Zeile stehen je nach Zustand zentrale Folgeaktionen bereit:
 
+- `Commit`
+- `Push`
 - `Repair remote`
 - `Remove remote`
-- `Create GitHub repository`
-- `Reinitialize repository`
+- `GitHub-Repository anlegen`
+- `Repository neu initialisieren`
+- `Repo Explorer oeffnen`
+- `Verlauf anzeigen`
+- `Diagnose anzeigen`
 
-Das Hauptfenster enthaelt jetzt nur noch die lokale Repository-Tabelle. Die Diagnose oeffnet sich ueber das separate, nicht-modale Fenster `Diagnosefenster`, waehrend das MainWindow weiter bedienbar bleibt.
+Das Hauptfenster ist jetzt klarer gegliedert in:
+
+- eine Toolbar mit Primaeraktionen wie `Alles aktualisieren`, `Pull`, `Push`, `Commit`, `Clone` und `Publish`
+- eine kombinierte Repository-Haupttabelle fuer lokale und reine Remote-Repositories
+- ein eingebettetes Repository-Details-Panel
+- getrennte Panels fuer Diagnose, Job-Historie und Laufzeitlog
+
+Die Toolbar- und Menueaktionen reagieren auf den aktuellen `Sync State` des ausgewaehlten Repositorys. Die Diagnose oeffnet sich weiterhin ueber das separate, nicht-modale Fenster `Diagnosefenster`, waehrend das MainWindow bedienbar bleibt.
 
 Im Diagnosefenster sieht man fuer das aktuell ausgewaehlte Repository:
 
@@ -96,6 +152,20 @@ Zusetzlich gilt jetzt fuer STUFE 2:
 - der GitHub-Refresh aktualisiert nur geaenderte Remote-Zeilen
 - verschwundene GitHub-Repositories werden gezielt aus der Tabelle entfernt
 - die fuer Tooltips benoetigten GitHub-Basisfelder wie `topics`, `description`, `contributors_summary`, `created_at`, `updated_at`, `pushed_at` und `size` werden ebenfalls im State-Cache gehalten
+- die Tabelle zeigt jetzt auch den verknuepften `Local Path`, `Sync State`, `Health` und die `Recommended Action`
+
+## Menues
+
+Die Menuestruktur ist jetzt operativ gruppiert:
+
+- `Datei`: GitHub-Hinweis, Zielordner, Einstellungen, Datenordner, Log-Datei und Beenden
+- `Synchronisieren`: Remote laden, lokalen Scan, Alles aktualisieren, Normal Refresh, Hard Refresh, ausgewaehltes Repository aktualisieren
+- `Repository`: zustandsabhaengige Repository-Aktionen fuer die aktuelle Selektion
+- `Analyse`: Repo Explorer, Historie, Diagnose, Struktur-Scan und Status-Neuberechnung
+- `Ansicht`: Diagnosebereich, Job-Historie, Logbereich, Repo-Explorer-Einstieg, Spalten-Hinweis und Filter-Reset
+- `Hilfe`: Ueber-Dialog, README und Entwicklerdokumentation
+
+Das Repository-Menue, die Toolbar und das Kontextmenue aktivieren nur Aktionen, die zur aktuellen lokalen oder Remote-Selektion passen.
 
 ## Logging
 
@@ -108,27 +178,45 @@ Dort landen unter anderem:
 - Git-Kommandos und deren Erfolg oder Fehler
 - detaillierte lokale Repository-Scans, Remote-Validierungen und Dateiindexierung
 
-## Repo-Kontext
+## RepoViewer Phase II
 
-Ein Doppelklick auf ein Remote- oder lokales Repository oeffnet aktuell keinen vollstaendigen RepoViewer, sondern einen einfachen Repo-Kontext-Dialog.
+Ein Doppelklick auf ein Remote- oder lokales Repository oeffnet jetzt den RepoViewer fuer MVP Phase II.
 
-Dieser Dialog ist die saubere Eintrittsschicht fuer Teil 2 und zeigt nur zusammengefuehrte Metadaten:
+Der RepoViewer ist SQLite-first und kombiniert Local-, Remote-, State-, Struktur- und Historiedaten in Tabs:
 
-- Name und Full Name
-- Local Path und Remote URL
-- Branch- und Sichtbarkeitsdaten
-- letzte bekannte Aktion
-- Struktur-Vault-Zusammenfassung
-- juengste State-Diagnoseereignisse aus `repo_status_events`
+- `Ueberblick`: kompakte Metadaten und Diagnose-Kurzansicht
+- `Dashboard`: `Health State`, `Sync State`, `Recommended Action`, letzte Scans und persistierte Fingerprints
+- `Repo Explorer`: baumartige Struktur aus `repo_struct_vault.db` mit Git-Status und Extension-Filter
+- `Historie`: Clone-, Commit-, Push-, Delete- und Struktur-Aktionen aus den Job-Tabellen
+- `Diagnose`: append-only `repo_status_events` plus juengste `scan_runs`
 
-Die Remote-Tabelle bleibt kompakt; zusaetzliche GitHub-Basisfelder wie `created_at`, `pushed_at`, `size` und `topics` stehen aktuell ueber Tooltips an der Namensspalte zur Verfuegung.
-Soweit praktikabel werden auch Contributor-Zusammenfassungen geladen und in Tooltip sowie Repo-Kontext angezeigt.
+Neu in Phase II:
 
-Noch nicht enthalten:
+- `RepositorySyncOrchestrator` als zentrale Sync-Koordinationsschicht
+- persistierte `recommended_action`- und `available_actions`-Felder im State-Layer
+- deltafaehiger `RepositoryStructureScanner` fuer `repo_struct_vault.db`
+- strukturierte Diagnoseevents wie `STRUCT_SCAN_DONE`, `REMOTE_SYNC_COMPLETED` oder `LOCAL_SCAN_SKIPPED_UNCHANGED`
 
-- Dateiansicht
+## Time-Travel & Evolution Explorer
+
+iGitty fuehrt jetzt zusaetzlich ein Repository-Time-Travel-System ein:
+
+- `RepositorySnapshotService` erzeugt bei erfolgreichen Scans und relevanten Aktionen neue Snapshots
+- redundante Scan-Snapshots werden uebersprungen, solange Fingerprint, Commit und Struktur unveraendert bleiben
+- `repo_snapshots` speichert jetzt auch `repo_key`, `snapshot_timestamp`, `branch`, `head_commit`, `file_count`, `change_count`, `scan_fingerprint` und `structure_hash`
+- `repo_snapshot_files` haelt die diffbare Dateimenge je Snapshot
+- `RepositoryEvolutionAnalyzer` berechnet Wachstum, Dateitypenhaeufigkeit, Strukturveraenderungen und Aktivitaetsphasen
+
+Der RepoViewer enthaelt dafuer zwei weitere Tabs:
+
+- `Timeline`: Snapshots, Aktionen, Diagnoseevents und Scan-Laeufe in einer Chronologie
+- `Evolution`: Wachstumskennzahlen, Snapshot-Diffs und Strukturentwicklung
+
+Noch weiterhin nicht enthalten:
+
 - Editor
 - Diff-Ansicht
+- Merge- oder Rebase-Workflows
 
 ## Starten
 
@@ -141,7 +229,7 @@ python main.py
 
 ```powershell
 python -m compileall core controllers db models services ui tests
-python -m pytest tests/test_masking.py tests/test_init_db.py tests/test_local_repo_service.py tests/test_local_repo_controller.py tests/test_remote_repo_controller.py tests/test_remote_repo_service.py tests/test_main_window.py tests/test_repo_action_resolver.py tests/test_clone_service.py tests/test_push_service.py tests/test_delete_service.py tests/test_repo_struct_service.py tests/test_repo_context_service.py tests/test_state_services.py tests/test_state_view_service.py tests/test_github_service.py tests/test_remote_visibility_service.py tests/test_logger.py tests/test_diagnostics_window.py
+python -m pytest tests/test_masking.py tests/test_init_db.py tests/test_local_repo_service.py tests/test_local_repo_controller.py tests/test_remote_repo_controller.py tests/test_remote_repo_service.py tests/test_main_window.py tests/test_repo_action_resolver.py tests/test_clone_service.py tests/test_push_service.py tests/test_delete_service.py tests/test_repo_struct_service.py tests/test_repo_context_service.py tests/test_repository_structure_scanner.py tests/test_repository_sync_orchestrator.py tests/test_repository_snapshot_service.py tests/test_repository_evolution_analyzer.py tests/test_repo_context_dialog.py tests/test_state_services.py tests/test_state_view_service.py tests/test_github_service.py tests/test_remote_visibility_service.py tests/test_logger.py tests/test_diagnostics_window.py
 ```
 
 ## Architekturhinweise
