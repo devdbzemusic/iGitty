@@ -54,6 +54,6 @@ def ensure_runtime_paths() -> RuntimePaths:
         jobs_db_file=data_dir / "igitty_jobs.db",
         repo_struct_db_file=data_dir / "repo_struct_vault.db",
         state_db_file=data_dir / "igitty_state.db",
-        log_file=logs_dir / "igitty.log",
+        log_file=logs_dir / "log.txt",
         stylesheet_file=assets_dir / "styles" / "neon_dark.qss",
     )

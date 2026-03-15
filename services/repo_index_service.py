@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.logger import AppLogger
 from db.state_repository import StateRepository
 from models.state_models import RepoStatusEvent, RepositoryState
 from services.git_inspector_service import GitInspectorService
@@ -22,6 +23,7 @@ class RepoIndexService:
         git_inspector_service: GitInspectorService,
         remote_validation_service: RemoteValidationService | None = None,
         repo_structure_service: RepoStructureService | None = None,
+        logger: AppLogger | None = None,
     ) -> None:
         """
         Initialisiert die Indexierung mit den benoetigten Fachservices.
@@ -46,6 +48,7 @@ class RepoIndexService:
         self._git_inspector_service = git_inspector_service
         self._remote_validation_service = remote_validation_service
         self._repo_structure_service = repo_structure_service
+        self._logger = logger
 
     def scan_root(self, root_path: Path) -> list[RepositoryState]:
         """
@@ -66,14 +69,20 @@ class RepoIndexService:
         """
 
         if not root_path.exists():
+            if self._logger is not None:
+                self._logger.warning(f"Root-Scan uebersprungen, Pfad existiert nicht: {root_path}")
             return []
 
+        if self._logger is not None:
+            self._logger.event("scan", "repo_index_root_begin", f"root_path={root_path}")
         indexed_repositories: list[RepositoryState] = []
         scan_timestamp = self._utc_now()
         for current_path, dir_names, _file_names in root_path.walk():
             if ".git" not in dir_names:
                 continue
 
+            if self._logger is not None:
+                self._logger.event("scan", "repo_index_repository_found", f"repo_path={current_path}")
             repository = self._inspect_repository(Path(current_path), scan_timestamp)
             repository = self._state_repository.upsert_repository(repository)
             self._state_repository.add_status_event(
@@ -86,6 +95,12 @@ class RepoIndexService:
             )
 
             if self._remote_validation_service is not None and repository.has_remote:
+                if self._logger is not None:
+                    self._logger.event(
+                        "scan",
+                        "remote_validation_begin",
+                        f"name={repository.name} | remote_url={repository.remote_url}",
+                    )
                 repository = self._remote_validation_service.validate_repository(repository)
                 self._state_repository.add_status_event(
                     RepoStatusEvent(
@@ -97,6 +112,12 @@ class RepoIndexService:
                 )
 
             if self._repo_structure_service is not None and repository.id is not None:
+                if self._logger is not None:
+                    self._logger.event(
+                        "scan",
+                        "file_index_begin",
+                        f"name={repository.name} | repo_id={repository.id} | local_path={repository.local_path}",
+                    )
                 indexed_count = self._repo_structure_service.index_repository_files(int(repository.id), Path(repository.local_path))
                 self._state_repository.add_status_event(
                     RepoStatusEvent(
@@ -111,6 +132,12 @@ class RepoIndexService:
             dir_names[:] = []
 
         indexed_repositories.sort(key=lambda item: item.name.lower())
+        if self._logger is not None:
+            self._logger.event(
+                "scan",
+                "repo_index_root_complete",
+                f"root_path={root_path} | repositories={len(indexed_repositories)}",
+            )
         return indexed_repositories
 
     def _inspect_repository(self, repo_path: Path, scan_timestamp: str) -> RepositoryState:
@@ -132,8 +159,12 @@ class RepoIndexService:
         """
 
         try:
+            if self._logger is not None:
+                self._logger.event("scan", "inspect_repository_state_begin", f"repo_path={repo_path}")
             data = self._git_inspector_service.inspect_repository(repo_path)
         except Exception as error:  # noqa: BLE001
+            if self._logger is not None:
+                self._logger.warning(f"Repository konnte nicht inspiziert werden: {repo_path} | {error}")
             return RepositoryState(
                 name=repo_path.name,
                 local_path=str(repo_path),
@@ -161,7 +192,7 @@ class RepoIndexService:
             None,
         )
 
-        return RepositoryState(
+        repository_state = RepositoryState(
             name=str(data.get("name") or repo_path.name),
             local_path=str(data.get("local_path") or repo_path),
             is_git_repo=is_git_repo,
@@ -180,6 +211,13 @@ class RepoIndexService:
             last_local_scan_at=scan_timestamp,
             last_remote_check_at="",
         )
+        if self._logger is not None:
+            self._logger.event(
+                "scan",
+                "inspect_repository_state_complete",
+                f"name={repository_state.name} | status={repository_state.status} | has_remote={repository_state.has_remote}",
+            )
+        return repository_state
 
     def _utc_now(self) -> str:
         """

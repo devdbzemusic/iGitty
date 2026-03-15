@@ -47,6 +47,11 @@ class RepoTableWidget(QGroupBox):
         self._table = QTableWidget()
         self._filter_input = QLineEdit()
         self._select_all_checkbox = QCheckBox("Alle auswaehlen")
+        normalized_title = title.lower().replace(" ", "_").replace("-", "_")
+        self.setObjectName(f"{normalized_title}_group")
+        self._table.setObjectName(f"{normalized_title}_table")
+        self._filter_input.setObjectName(f"{normalized_title}_filter")
+        self._select_all_checkbox.setObjectName(f"{normalized_title}_select_all")
         self._build_ui()
         self._wire_signals()
 

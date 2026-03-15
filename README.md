@@ -45,17 +45,30 @@ Die lokale Repository-Tabelle zeigt jetzt zusaetzlich:
 - `Create GitHub repository`
 - `Reinitialize repository`
 
-Unter der lokalen Tabelle zeigt ein eigener Diagnosebereich fuer das aktuell ausgewaehlte Repository:
+Das Hauptfenster enthaelt jetzt nur noch die lokale Repository-Tabelle. Die Diagnose oeffnet sich ueber das separate, nicht-modale Fenster `Diagnosefenster`, waehrend das MainWindow weiter bedienbar bleibt.
+
+Im Diagnosefenster sieht man fuer das aktuell ausgewaehlte Repository:
 
 - den persistierten State-Status
 - Remote- und Online-Zustand
 - letzte lokale Scan- und Remote-Check-Zeit
 - die juengsten `repo_status_events`
 
-Zusaetzlich zeigt ein eigener Bereich `Job-Historie` unter der lokalen Tabelle:
+Zusaetzlich zeigt das Diagnosefenster einen Bereich `Job-Historie`:
 
 - die juengsten Clone-, Commit-, Push-, Delete- und Struktur-Aktionen
 - die kombinierte Sicht aus `clone_history` und `action_history`
+
+## Logging
+
+iGitty schreibt jetzt ein deutlich erweitertes Laufzeitprotokoll nach `logs/log.txt`.
+
+Dort landen unter anderem:
+
+- App-Start und Initialisierungsschritte
+- Widget-Fokus, Fensteroeffnungen und Klicks auf wichtige UI-Elemente
+- Git-Kommandos und deren Erfolg oder Fehler
+- detaillierte lokale Repository-Scans, Remote-Validierungen und Dateiindexierung
 
 ## Repo-Kontext
 

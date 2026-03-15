@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.logger import AppLogger
 from db.state_repository import StateRepository
 from models.state_models import RepoFileState
 from services.git_service import GitService
@@ -13,7 +14,12 @@ from services.git_service import GitService
 class RepoStructureService:
     """Indexiert Dateien eines lokalen Repositories in `repo_files`."""
 
-    def __init__(self, state_repository: StateRepository, git_service: GitService) -> None:
+    def __init__(
+        self,
+        state_repository: StateRepository,
+        git_service: GitService,
+        logger: AppLogger | None = None,
+    ) -> None:
         """
         Verbindet Dateiscanner, Git-Status und State-Datenbank.
 
@@ -34,6 +40,7 @@ class RepoStructureService:
 
         self._state_repository = state_repository
         self._git_service = git_service
+        self._logger = logger
 
     def index_repository_files(self, repo_id: int, repo_path: Path) -> int:
         """
@@ -54,6 +61,8 @@ class RepoStructureService:
           iGitty-Uebersicht keinen Mehrwert liefern und Scans unnötig verlangsamen.
         """
 
+        if self._logger is not None:
+            self._logger.event("scan", "repo_structure_begin", f"repo_id={repo_id} | repo_path={repo_path}")
         tracked_files = set(self._git_service.list_tracked_files(repo_path))
         ignored_paths = {line.rstrip("/") for line in self._git_service.list_ignored_paths(repo_path)}
 
@@ -80,6 +89,12 @@ class RepoStructureService:
             )
 
         self._state_repository.replace_repo_files(repo_id, files)
+        if self._logger is not None:
+            self._logger.event(
+                "scan",
+                "repo_structure_complete",
+                f"repo_id={repo_id} | repo_path={repo_path} | files={len(files)}",
+            )
         return len(files)
 
     def _is_ignored_path(self, relative_path: str, ignored_paths: set[str]) -> bool:

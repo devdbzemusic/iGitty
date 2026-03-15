@@ -34,7 +34,7 @@ def test_initialize_databases_creates_files(tmp_path: Path) -> None:
         jobs_db_file=tmp_path / "data" / "igitty_jobs.db",
         repo_struct_db_file=tmp_path / "data" / "repo_struct_vault.db",
         state_db_file=tmp_path / "data" / "igitty_state.db",
-        log_file=tmp_path / "logs" / "igitty.log",
+        log_file=tmp_path / "logs" / "log.txt",
         stylesheet_file=tmp_path / "assets" / "styles" / "neon_dark.qss",
     )
     paths.data_dir.mkdir(parents=True, exist_ok=True)
@@ -60,7 +60,7 @@ def test_has_successful_clone_matches_remote_url_or_repo_id(tmp_path: Path) -> N
         jobs_db_file=tmp_path / "data" / "igitty_jobs.db",
         repo_struct_db_file=tmp_path / "data" / "repo_struct_vault.db",
         state_db_file=tmp_path / "data" / "igitty_state.db",
-        log_file=tmp_path / "logs" / "igitty.log",
+        log_file=tmp_path / "logs" / "log.txt",
         stylesheet_file=tmp_path / "assets" / "styles" / "neon_dark.qss",
     )
     paths.data_dir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +96,7 @@ def test_initialize_databases_creates_extended_history_tables(tmp_path: Path) ->
         jobs_db_file=tmp_path / "data" / "igitty_jobs.db",
         repo_struct_db_file=tmp_path / "data" / "repo_struct_vault.db",
         state_db_file=tmp_path / "data" / "igitty_state.db",
-        log_file=tmp_path / "logs" / "igitty.log",
+        log_file=tmp_path / "logs" / "log.txt",
         stylesheet_file=tmp_path / "assets" / "styles" / "neon_dark.qss",
     )
     paths.data_dir.mkdir(parents=True, exist_ok=True)
@@ -125,7 +125,7 @@ def test_add_action_record_writes_specialized_history(tmp_path: Path) -> None:
         jobs_db_file=tmp_path / "data" / "igitty_jobs.db",
         repo_struct_db_file=tmp_path / "data" / "repo_struct_vault.db",
         state_db_file=tmp_path / "data" / "igitty_state.db",
-        log_file=tmp_path / "logs" / "igitty.log",
+        log_file=tmp_path / "logs" / "log.txt",
         stylesheet_file=tmp_path / "assets" / "styles" / "neon_dark.qss",
     )
     paths.data_dir.mkdir(parents=True, exist_ok=True)

@@ -37,7 +37,7 @@ def _build_runtime_paths(tmp_path):
         jobs_db_file=tmp_path / "data" / "igitty_jobs.db",
         repo_struct_db_file=tmp_path / "data" / "repo_struct_vault.db",
         state_db_file=tmp_path / "data" / "igitty_state.db",
-        log_file=tmp_path / "logs" / "igitty.log",
+        log_file=tmp_path / "logs" / "log.txt",
         stylesheet_file=tmp_path / "assets" / "styles" / "neon_dark.qss",
     )
     paths.data_dir.mkdir(parents=True, exist_ok=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.logger import AppLogger
 from models.repo_models import LocalRepo
 from models.state_models import RepositoryState
 from services.git_service import GitService
@@ -19,6 +20,7 @@ class LocalRepoService:
         git_service: GitService,
         github_service: GitHubService | None = None,
         repo_index_service: RepoIndexService | None = None,
+        logger: AppLogger | None = None,
     ) -> None:
         """
         Initialisiert den Service mit einer Git-Abhaengigkeit.
@@ -39,6 +41,7 @@ class LocalRepoService:
         self._git_service = git_service
         self._github_service = github_service
         self._repo_index_service = repo_index_service
+        self._logger = logger
         self._remote_metadata_cache: dict[str, tuple[str, int]] = {}
 
     def scan_repositories(self, root_path: Path) -> list[LocalRepo]:
@@ -60,13 +63,26 @@ class LocalRepoService:
         - Schneidet Unterbaeume erkannter Repositories ab, um doppelte Funde zu vermeiden.
         """
 
+        if self._logger is not None:
+            self._logger.event("scan", "local_scan_begin", f"root_path={root_path}")
         self._git_service.ensure_git_available()
         if not root_path.exists():
+            if self._logger is not None:
+                self._logger.warning(f"Lokaler Scanpfad existiert nicht: {root_path}")
             return []
 
         if self._repo_index_service is not None:
+            if self._logger is not None:
+                self._logger.event("scan", "local_scan_using_state_index", f"root_path={root_path}")
             repository_states = self._repo_index_service.scan_root(root_path)
-            return [self._map_state_to_local_repo(repository) for repository in repository_states]
+            mapped_repositories = [self._map_state_to_local_repo(repository) for repository in repository_states]
+            if self._logger is not None:
+                self._logger.event(
+                    "scan",
+                    "local_scan_complete",
+                    f"root_path={root_path} | repositories={len(mapped_repositories)}",
+                )
+            return mapped_repositories
 
         repositories: list[LocalRepo] = []
         for current_path, dir_names, _file_names in root_path.walk():
@@ -74,6 +90,8 @@ class LocalRepoService:
                 continue
 
             repo_path = current_path
+            if self._logger is not None:
+                self._logger.event("scan", "git_directory_found", f"repo_path={repo_path}")
             details = self._git_service.get_repo_details(repo_path)
             remote_visibility, remote_repo_id = self._resolve_remote_visibility(str(details["remote_url"]))
             repositories.append(
@@ -98,6 +116,8 @@ class LocalRepoService:
             dir_names[:] = []
 
         repositories.sort(key=lambda item: item.name.lower())
+        if self._logger is not None:
+            self._logger.event("scan", "local_scan_complete", f"root_path={root_path} | repositories={len(repositories)}")
         return repositories
 
     def _map_state_to_local_repo(self, repository: RepositoryState) -> LocalRepo:
@@ -132,7 +152,7 @@ class LocalRepoService:
             except Exception:  # noqa: BLE001
                 repo_details = {}
 
-        return LocalRepo(
+        mapped_repo = LocalRepo(
             name=repository.name,
             full_path=repository.local_path,
             current_branch=repository.current_branch or "-",
@@ -153,6 +173,13 @@ class LocalRepoService:
             remote_exists_online=repository.remote_exists_online,
             recommended_action=self._build_recommended_action(repository.status),
         )
+        if self._logger is not None:
+            self._logger.event(
+                "scan",
+                "state_repository_mapped",
+                f"name={mapped_repo.name} | status={mapped_repo.remote_status} | local_path={mapped_repo.full_path}",
+            )
+        return mapped_repo
 
     def _build_recommended_action(self, remote_status: str) -> str:
         """
@@ -219,8 +246,13 @@ class LocalRepoService:
                 counts[language] = counts.get(language, 0) + 1
 
         if not counts:
+            if self._logger is not None:
+                self._logger.event("scan", "language_guess_empty", f"repo_path={repo_path}")
             return "-"
-        return max(counts.items(), key=lambda item: item[1])[0]
+        language = max(counts.items(), key=lambda item: item[1])[0]
+        if self._logger is not None:
+            self._logger.event("scan", "language_guess_complete", f"repo_path={repo_path} | language={language}")
+        return language
 
     def _resolve_remote_visibility(self, remote_url: str) -> tuple[str, int]:
         """
@@ -240,14 +272,28 @@ class LocalRepoService:
         """
 
         if not remote_url:
+            if self._logger is not None:
+                self._logger.event("scan", "resolve_remote_visibility_skipped", "Kein Remote vorhanden.")
             return "not_published", 0
         if remote_url in self._remote_metadata_cache:
+            if self._logger is not None:
+                self._logger.event("scan", "resolve_remote_visibility_cache_hit", f"remote_url={remote_url}")
             return self._remote_metadata_cache[remote_url]
         if self._github_service is None:
+            if self._logger is not None:
+                self._logger.event("scan", "resolve_remote_visibility_no_github_service", f"remote_url={remote_url}")
             return "unknown", 0
         try:
             result = self._github_service.resolve_remote_metadata(remote_url)
         except Exception:  # noqa: BLE001
             result = ("unknown", 0)
+            if self._logger is not None:
+                self._logger.warning(f"Remote-Sichtbarkeit konnte nicht aufgeloest werden: {remote_url}")
         self._remote_metadata_cache[remote_url] = result
+        if self._logger is not None:
+            self._logger.event(
+                "scan",
+                "resolve_remote_visibility_complete",
+                f"remote_url={remote_url} | visibility={result[0]} | repo_id={result[1]}",
+            )
         return result

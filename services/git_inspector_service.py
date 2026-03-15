@@ -5,13 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import urlparse
 
+from core.logger import AppLogger
 from services.git_service import GitService
 
 
 class GitInspectorService:
     """Liest stabile Git-Basisinformationen fuer den persistenten State-Layer aus."""
 
-    def __init__(self, git_service: GitService) -> None:
+    def __init__(self, git_service: GitService, logger: AppLogger | None = None) -> None:
         """
         Initialisiert den Inspektionsservice mit einer Git-Abhaengigkeit.
 
@@ -29,6 +30,7 @@ class GitInspectorService:
         """
 
         self._git_service = git_service
+        self._logger = logger
 
     def inspect_repository(self, repo_path: Path) -> dict[str, object]:
         """
@@ -48,6 +50,8 @@ class GitInspectorService:
           echten lokalen Zustand entspricht und keine implizite Git-Bibliothek noetig ist.
         """
 
+        if self._logger is not None:
+            self._logger.event("scan", "inspect_repository_begin", f"repo_path={repo_path}")
         self._git_service.ensure_git_available()
         is_git_repo = self._git_service.is_git_repository(repo_path)
         remote_names = self._git_service.get_remote_names(repo_path) if is_git_repo else []
@@ -57,7 +61,7 @@ class GitInspectorService:
         status_lines = self._git_service.get_status_porcelain(repo_path) if is_git_repo else []
         remote_host, remote_owner, remote_repo_name = self._parse_remote_details(remote_url)
 
-        return {
+        result = {
             "name": repo_path.name,
             "local_path": str(repo_path),
             "is_git_repo": is_git_repo,
@@ -72,6 +76,13 @@ class GitInspectorService:
             "remote_repo_name": remote_repo_name,
             "has_uncommitted_changes": bool(status_lines),
         }
+        if self._logger is not None:
+            self._logger.event(
+                "scan",
+                "inspect_repository_complete",
+                f"repo_path={repo_path} | is_git_repo={is_git_repo} | remote_name={remote_name or '-'}",
+            )
+        return result
 
     def _parse_remote_details(self, remote_url: str) -> tuple[str, str, str]:
         """

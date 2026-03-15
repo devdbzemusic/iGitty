@@ -75,6 +75,7 @@ class MainController:
         self._repo_struct_repository = RepoStructRepository(paths.repo_struct_db_file)
         self._state_repository = StateRepository(paths.state_db_file)
         self._logger.subscribe(self._window.append_log_line)
+        self._logger.event("app", "main_controller_initialized", f"target_dir={config.default_repo_dir}")
         self._window.set_target_directory(str(config.default_repo_dir))
         self._window.target_directory_change_requested.connect(self._change_target_directory)
         self._window.remote_repo_open_requested.connect(self.open_repo_context)
@@ -82,15 +83,20 @@ class MainController:
         self._window.local_repo_selected.connect(self.show_local_repo_diagnostics)
 
         github_service = GitHubService(env_settings)
-        git_service = GitService()
-        git_inspector_service = GitInspectorService(git_service=git_service)
+        git_service = GitService(logger=logger)
+        git_inspector_service = GitInspectorService(git_service=git_service, logger=logger)
         remote_validation_service = RemoteValidationService(github_service=github_service, state_repository=self._state_repository)
-        repo_structure_service = RepoStructureService(state_repository=self._state_repository, git_service=git_service)
+        repo_structure_service = RepoStructureService(
+            state_repository=self._state_repository,
+            git_service=git_service,
+            logger=logger,
+        )
         repo_index_service = RepoIndexService(
             state_repository=self._state_repository,
             git_inspector_service=git_inspector_service,
             remote_validation_service=remote_validation_service,
             repo_structure_service=repo_structure_service,
+            logger=logger,
         )
         clone_service = CloneService(git_service=git_service)
         commit_service = CommitService(git_service=git_service)
@@ -100,6 +106,7 @@ class MainController:
             git_service=git_service,
             github_service=github_service,
             repo_index_service=repo_index_service,
+            logger=logger,
         )
         job_log_repository = JobLogRepository(paths.jobs_db_file)
         repo_struct_service = RepoStructService(self._repo_struct_repository)
@@ -143,7 +150,7 @@ class MainController:
         )
 
         self._window.update_status(self._build_status_snapshot())
-        self._window.append_log_line("iGitty Grundgeruest initialisiert.")
+        self._logger.info("iGitty Grundgeruest initialisiert.")
 
     def _scan_local_after_clone(self) -> None:
         """
@@ -183,6 +190,7 @@ class MainController:
         """
 
         try:
+            self._logger.event("ui", "repo_context_open_requested", f"source_type={source_type} | repo_ref={repo_ref}")
             context = self._repo_context_service.build_context(
                 repo_ref=repo_ref,
                 source_type=source_type,
@@ -192,7 +200,7 @@ class MainController:
             dialog = RepoContextDialog(context=context, parent=self._window)
             dialog.exec()
         except Exception as error:  # noqa: BLE001
-            self._logger.info(f"Repo-Kontext konnte nicht geladen werden: {error}")
+            self._logger.exception(f"Repo-Kontext konnte nicht geladen werden: {error}")
             fallback_context = RepoContext(
                 source_type=source_type,
                 repo_name=str(repo_ref.get("repo_name") or repo_ref.get("repo_full_name") or repo_ref.get("local_path") or "unbekannt"),
@@ -222,6 +230,7 @@ class MainController:
             local_path = str(repo_ref.get("local_path") or "")
             repo_name = str(repo_ref.get("repo_name") or "")
             remote_url = str(repo_ref.get("remote_url") or "")
+            self._logger.event("ui", "local_repo_selected", f"repo_name={repo_name} | local_path={local_path}")
             lines = self._state_view_service.build_local_repo_diagnostics(local_path)
             self._window.set_local_repo_diagnostics(lines)
             history_lines = self._job_history_view_service.build_repo_history(
@@ -231,7 +240,7 @@ class MainController:
             )
             self._window.set_local_repo_history(history_lines)
         except Exception as error:  # noqa: BLE001
-            self._logger.info(f"Repository-Diagnose konnte nicht geladen werden: {error}")
+            self._logger.exception(f"Repository-Diagnose konnte nicht geladen werden: {error}")
             self._window.set_local_repo_diagnostics([f"Fehler beim Laden der Diagnose: {error}"])
             self._window.set_local_repo_history([f"Fehler beim Laden der Job-Historie: {error}"])
 
@@ -280,4 +289,4 @@ class MainController:
         self._state.current_target_dir = Path(new_directory)
         self._window.set_target_directory(new_directory)
         self._window.update_status(self._build_status_snapshot())
-        self._window.append_log_line(f"Zielordner auf '{new_directory}' gesetzt.")
+        self._logger.info(f"Zielordner auf '{new_directory}' gesetzt.")

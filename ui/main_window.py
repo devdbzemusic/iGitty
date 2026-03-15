@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from models.repo_models import LocalRepo, RemoteRepo
 from models.view_models import StatusSnapshot
+from ui.dialogs.diagnostics_window import DiagnosticsWindow
 from ui.widgets.log_panel_widget import LogPanelWidget
 from ui.widgets.path_selector_widget import PathSelectorWidget
 from ui.widgets.repo_table_widget import RepoTableWidget
@@ -63,6 +64,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("iGitty")
         self.resize(1600, 920)
+        self.setObjectName("main_window")
 
         self._remote_table = RepoTableWidget(
             title="Remote GitHub Repositories",
@@ -85,8 +87,7 @@ class MainWindow(QMainWindow):
         )
         self._path_selector = PathSelectorWidget()
         self._log_panel = LogPanelWidget()
-        self._local_diagnostics_panel = LogPanelWidget()
-        self._local_history_panel = LogPanelWidget()
+        self._diagnostics_window = DiagnosticsWindow(self)
         self._status_bar_widget = StatusBarWidget()
         self._remote_repositories: list[RemoteRepo] = []
         self._local_repositories: list[LocalRepo] = []
@@ -112,6 +113,7 @@ class MainWindow(QMainWindow):
         """
 
         central_widget = QWidget()
+        central_widget.setObjectName("main_central_widget")
         root_layout = QVBoxLayout(central_widget)
         root_layout.setContentsMargins(12, 12, 12, 12)
         root_layout.setSpacing(12)
@@ -125,6 +127,15 @@ class MainWindow(QMainWindow):
         self._push_button = QPushButton("Push")
         self._delete_button = QPushButton("Remote loeschen")
         self._struct_scan_button = QPushButton("Struktur scannen")
+        self._diagnostics_button = QPushButton("Diagnosefenster")
+        self._refresh_remote_button.setObjectName("refresh_remote_button")
+        self._scan_local_button.setObjectName("scan_local_button")
+        self._clone_button.setObjectName("clone_button")
+        self._commit_button.setObjectName("commit_button")
+        self._push_button.setObjectName("push_button")
+        self._delete_button.setObjectName("delete_button")
+        self._struct_scan_button.setObjectName("struct_scan_button")
+        self._diagnostics_button.setObjectName("diagnostics_button")
         self._clone_button.setEnabled(False)
         self._commit_button.setEnabled(False)
         self._push_button.setEnabled(False)
@@ -139,6 +150,7 @@ class MainWindow(QMainWindow):
             self._push_button,
             self._delete_button,
             self._struct_scan_button,
+            self._diagnostics_button,
         ):
             toolbar_layout.addWidget(widget)
         toolbar_layout.addStretch(1)
@@ -147,19 +159,7 @@ class MainWindow(QMainWindow):
 
         local_box = QGroupBox("Lokale Ansicht")
         local_layout = QVBoxLayout(local_box)
-        diagnostics_box = QGroupBox("Repository-Diagnose")
-        diagnostics_layout = QVBoxLayout(diagnostics_box)
-        history_box = QGroupBox("Job-Historie")
-        history_layout = QVBoxLayout(history_box)
-        self._local_diagnostics_panel.setMaximumBlockCount(200)
-        self._local_diagnostics_panel.set_messages([], "Kein lokales Repository ausgewaehlt.")
-        self._local_history_panel.setMaximumBlockCount(200)
-        self._local_history_panel.set_messages([], "Keine Job-Historie fuer dieses Repository vorhanden.")
-        diagnostics_layout.addWidget(self._local_diagnostics_panel)
-        history_layout.addWidget(self._local_history_panel)
         local_layout.addWidget(self._local_table, stretch=1)
-        local_layout.addWidget(diagnostics_box, stretch=0)
-        local_layout.addWidget(history_box, stretch=0)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._remote_table)
@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
         self._local_table.row_context_requested.connect(self._show_local_context_menu)
         self._local_table.row_selected.connect(self._select_local_row)
         self._path_selector.browse_requested.connect(self._choose_target_directory)
+        self._diagnostics_button.clicked.connect(self.show_diagnostics_window)
 
     def populate_remote_repositories(self, repositories: list[RemoteRepo]) -> None:
         """
@@ -293,8 +294,8 @@ class MainWindow(QMainWindow):
         self._push_button.setEnabled(has_local)
         self._struct_scan_button.setEnabled(has_local)
         if not repositories:
-            self._local_diagnostics_panel.set_messages([], "Kein lokales Repository ausgewaehlt.")
-            self._local_history_panel.set_messages([], "Keine Job-Historie fuer dieses Repository vorhanden.")
+            self._diagnostics_window.set_local_repo_diagnostics([])
+            self._diagnostics_window.set_local_repo_history([])
 
     def update_status(self, status: StatusSnapshot) -> None:
         """
@@ -351,7 +352,7 @@ class MainWindow(QMainWindow):
         - Das Hauptfenster zeigt nur vorbereiteten Text an und enthaelt keine Diagnosefachlogik.
         """
 
-        self._local_diagnostics_panel.set_messages(lines, "Kein lokales Repository ausgewaehlt.")
+        self._diagnostics_window.set_local_repo_diagnostics(lines)
 
     def set_local_repo_history(self, lines: list[str]) -> None:
         """
@@ -370,7 +371,28 @@ class MainWindow(QMainWindow):
         - Das Hauptfenster zeigt nur vorbereitete Daten an und haelt keine Job-Logik selbst vor.
         """
 
-        self._local_history_panel.set_messages(lines, "Keine Job-Historie fuer dieses Repository vorhanden.")
+        self._diagnostics_window.set_local_repo_history(lines)
+
+    def show_diagnostics_window(self) -> None:
+        """
+        Oeffnet das separate Diagnosefenster im nicht-modalen Modus.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - `show()` statt `exec()` haelt das Hauptfenster waehrend der Diagnose nutzbar.
+        """
+
+        self._diagnostics_window.show()
+        self._diagnostics_window.raise_()
+        self._diagnostics_window.activateWindow()
 
     def set_target_directory(self, path_text: str) -> None:
         """

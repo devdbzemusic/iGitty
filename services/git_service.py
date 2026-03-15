@@ -7,10 +7,31 @@ import subprocess
 from pathlib import Path
 
 from core.exceptions import IGittyError
+from core.logger import AppLogger
 
 
 class GitService:
     """Kapselt alle direkten Aufrufe der Git-CLI fuer den MVP."""
+
+    def __init__(self, logger: AppLogger | None = None) -> None:
+        """
+        Initialisiert den Git-Service optional mit einem Logger.
+
+        Eingabeparameter:
+        - logger: Optionaler zentraler Logger fuer detailreiche Git-Kommando-Protokolle.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine bei der Initialisierung.
+
+        Wichtige interne Logik:
+        - Das Logging bleibt optional, damit Tests den Service weiterhin leichtgewichtig
+          ohne weitere Infrastruktur verwenden koennen.
+        """
+
+        self._logger = logger
 
     def ensure_git_available(self) -> None:
         """
@@ -29,6 +50,8 @@ class GitService:
         - Die Vorpruefung vermeidet unklare Fehlermeldungen in spaeteren Detailabfragen.
         """
 
+        if self._logger is not None:
+            self._logger.event("git", "ensure_git_available", "Pruefe Git-CLI im PATH.")
         if shutil.which("git") is None:
             raise IGittyError("Git CLI wurde nicht gefunden. Bitte Git installieren oder PATH pruefen.")
 
@@ -271,6 +294,12 @@ class GitService:
         """
 
         try:
+            if self._logger is not None:
+                self._logger.event(
+                    "git",
+                    "clone_repository",
+                    f"clone_url={clone_url} | target_path={target_path}",
+                )
             subprocess.run(
                 ["git", "clone", clone_url, str(target_path)],
                 capture_output=True,
@@ -280,6 +309,8 @@ class GitService:
                 check=True,
             )
         except (subprocess.CalledProcessError, FileNotFoundError) as error:
+            if self._logger is not None:
+                self._logger.error(f"Git-Clone fehlgeschlagen fuer '{clone_url}' nach '{target_path}': {error}")
             raise IGittyError(f"Clone von '{clone_url}' nach '{target_path}' fehlgeschlagen: {error}") from error
 
     def stage_all_changes(self, repo_path: Path) -> None:
@@ -444,6 +475,12 @@ class GitService:
         - Kapselt `subprocess.run`, damit die restliche Anwendung keine Shell-Details kennen muss.
         """
 
+        if self._logger is not None:
+            self._logger.event(
+                "git",
+                "run_command",
+                f"repo_path={repo_path} | args={' '.join(arguments)} | allow_failure={allow_failure}",
+            )
         try:
             completed = subprocess.run(
                 ["git", *arguments],
@@ -454,8 +491,19 @@ class GitService:
                 errors="replace",
                 check=True,
             )
+            if self._logger is not None:
+                stdout_preview = completed.stdout.strip().replace("\n", " | ")
+                stderr_preview = completed.stderr.strip().replace("\n", " | ")
+                details = f"stdout={stdout_preview[:240]!r}"
+                if stderr_preview:
+                    details = f"{details} | stderr={stderr_preview[:240]!r}"
+                self._logger.event("git", "command_success", details)
             return completed.stdout
         except (subprocess.CalledProcessError, FileNotFoundError) as error:
+            if self._logger is not None:
+                self._logger.warning(
+                    f"Git-Kommando fehlgeschlagen fuer '{repo_path}' mit args={' '.join(arguments)}: {error}"
+                )
             if allow_failure:
                 return ""
             raise IGittyError(f"Git-Abfrage fuer '{repo_path}' fehlgeschlagen: {error}") from error
