@@ -232,26 +232,12 @@ class MainWindow(QMainWindow):
         - Reduziert das View-Mapping auf eine einzige Stelle im UI-Layer.
         """
 
-        self._remote_repositories = repositories
-        rows = [
-            [
-                "",
-                repo.name,
-                repo.owner,
-                repo.visibility,
-                repo.default_branch,
-                repo.language,
-                "Ja" if repo.archived else "Nein",
-                "Ja" if repo.fork else "Nein",
-                repo.updated_at,
-            ]
-            for repo in repositories
-        ]
+        self._remote_repositories = list(repositories)
+        rows = [self._build_remote_row_values(repo) for repo in repositories]
         self._remote_table.populate_rows(rows)
         for row_index, repo in enumerate(repositories):
-            self._remote_table.set_item(row_index, 1, self._build_remote_name_item(repo))
-        self._clone_button.setEnabled(bool(repositories))
-        self._delete_button.setEnabled(bool(repositories))
+            self._render_remote_row(row_index, repo)
+        self._update_remote_action_buttons()
 
     def populate_local_repositories(self, repositories) -> None:
         """
@@ -674,14 +660,47 @@ class MainWindow(QMainWindow):
           Tooltips und Sortierung gemeinsam aktualisiert werden.
         """
 
-        repositories = list(self._remote_repositories)
-        for index, current_repository in enumerate(repositories):
+        previous_index = None
+        for index, current_repository in enumerate(self._remote_repositories):
             if current_repository.repo_id == repository.repo_id:
-                repositories[index] = repository
+                previous_index = index
                 break
-        else:
-            repositories.append(repository)
-        self.populate_remote_repositories(repositories)
+
+        if previous_index is not None:
+            del self._remote_repositories[previous_index]
+            self._remote_table.remove_row(previous_index)
+
+        insertion_index = self._find_remote_insert_index(repository)
+        self._remote_repositories.insert(insertion_index, repository)
+        self._remote_table.insert_row(insertion_index, self._build_remote_row_values(repository))
+        self._render_remote_row(insertion_index, repository)
+        self._update_remote_action_buttons()
+
+    def remove_remote_repository(self, repo_id: int) -> None:
+        """
+        Entfernt genau einen Remote-Repository-Eintrag gezielt aus Tabelle und In-Memory-Liste.
+
+        Eingabeparameter:
+        - repo_id: Stabile GitHub-Repository-ID des zu entfernenden Eintrags.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Unbekannte IDs werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Methode wird fuer partielle STUFE-2-Refreshes benoetigt, damit Remote-
+          Loeschungen nicht mehr die komplette Tabelle neu aufbauen muessen.
+        """
+
+        for index, repository in enumerate(self._remote_repositories):
+            if repository.repo_id != repo_id:
+                continue
+            del self._remote_repositories[index]
+            self._remote_table.remove_row(index)
+            self._update_remote_action_buttons()
+            return
 
     def _choose_target_directory(self) -> None:
         """
@@ -903,6 +922,106 @@ class MainWindow(QMainWindow):
         if remote_exists_online == 0:
             return "Nein"
         return "Unbekannt"
+
+    def _build_remote_row_values(self, repository: RemoteRepo) -> list[str]:
+        """
+        Erzeugt die Standard-Textwerte einer Remote-Tabellenzeile.
+
+        Eingabeparameter:
+        - repository: Remote-Repository fuer die darzustellende Zeile.
+
+        Rueckgabewerte:
+        - Liste der Standardzellwerte fuer das Tabellenwidget.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die zentrale Zeilenabbildung haelt Vollaufbau und partielle Remote-Updates konsistent.
+        """
+
+        return [
+            "",
+            repository.name,
+            repository.owner,
+            repository.visibility,
+            repository.default_branch,
+            repository.language,
+            "Ja" if repository.archived else "Nein",
+            "Ja" if repository.fork else "Nein",
+            repository.updated_at,
+        ]
+
+    def _render_remote_row(self, row_index: int, repository: RemoteRepo) -> None:
+        """
+        Vervollstaendigt Spezialzellen und Statusmarkierungen einer Remote-Tabellenzeile.
+
+        Eingabeparameter:
+        - row_index: Zielzeile innerhalb der Remote-Tabelle.
+        - repository: Fachmodell fuer die aktuelle Zeile.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine; ungueltige Zeilen werden von Qt defensiv behandelt.
+
+        Wichtige interne Logik:
+        - Name-Tooltip und optionale Statusfarben werden getrennt von den Standardzellen
+          gepflegt, damit gezielte Remote-Row-Updates einfach bleiben.
+        """
+
+        self._remote_table.set_item(row_index, 1, self._build_remote_name_item(repository))
+        self._remote_table.clear_row_background(row_index)
+        if repository.archived:
+            self._remote_table.set_row_background(row_index, "#3a3a3a")
+
+    def _find_remote_insert_index(self, repository: RemoteRepo) -> int:
+        """
+        Ermittelt die sortierte Einfuegeposition eines Remote-Repositories.
+
+        Eingabeparameter:
+        - repository: Neu einzufuegendes oder verschobenes Remote-Repository.
+
+        Rueckgabewerte:
+        - Zielindex innerhalb der Remote-In-Memory-Liste und Tabelle.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Remote-Tabelle bleibt alphabetisch stabil, ohne bei Einzelupdates einen
+          kompletten Neuaufbau zu benoetigen.
+        """
+
+        repository_key = (repository.full_name or repository.name).lower()
+        for index, current_repository in enumerate(self._remote_repositories):
+            current_key = (current_repository.full_name or current_repository.name).lower()
+            if repository_key < current_key:
+                return index
+        return len(self._remote_repositories)
+
+    def _update_remote_action_buttons(self) -> None:
+        """
+        Synchronisiert Clone- und Delete-Button mit der aktuellen Remote-Tabellenbelegung.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Button-Logik bleibt an einer zentralen Stelle, damit Vollaufbau und Delta-
+          Updates dasselbe Verhalten fuer die Toolbar nutzen.
+        """
+
+        has_remote = bool(self._remote_repositories)
+        self._clone_button.setEnabled(has_remote)
+        self._delete_button.setEnabled(has_remote)
 
     def _build_local_row_values(self, repository: LocalRepo) -> list[str]:
         """
@@ -1189,14 +1308,21 @@ class MainWindow(QMainWindow):
         current_visibility_action.setEnabled(False)
         menu.addSeparator()
 
-        toggle_action = None
-        if repository.visibility == "public":
-            toggle_action = menu.addAction("Auf private setzen")
-        elif repository.visibility == "private":
-            toggle_action = menu.addAction("Auf public setzen")
+        action_label_map = {
+            "set_private": "Auf private setzen",
+            "set_public": "Auf public setzen",
+        }
+        menu_actions: dict[str, object] = {}
+        for action_name in repository.available_actions:
+            label = action_label_map.get(action_name)
+            if not label:
+                continue
+            menu_actions[action_name] = menu.addAction(label)
+        if not menu_actions:
+            return
 
         selected_action = menu.exec(self.cursor().pos())
-        if selected_action == toggle_action and repository.visibility == "public":
-            self.remote_repo_action_requested.emit(repo_ref, "set_private")
-        elif selected_action == toggle_action and repository.visibility == "private":
-            self.remote_repo_action_requested.emit(repo_ref, "set_public")
+        for action_name, action in menu_actions.items():
+            if selected_action == action:
+                self.remote_repo_action_requested.emit(repo_ref, action_name)
+                return

@@ -38,6 +38,8 @@ class RemoteRepo:
     updated_at: str = ""
     pushed_at: str = ""
     size: int = 0
+    available_actions: list[str] = field(default_factory=list)
+    state_status_hash: str = ""
 
 
 @dataclass(slots=True)

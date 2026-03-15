@@ -24,6 +24,7 @@ from services.github_service import GitHubService
 from services.local_repo_service import LocalRepoService
 from services.push_service import PushService
 from services.remote_visibility_service import RemoteVisibilityService
+from services.remote_repo_service import RemoteRepoService
 from services.job_history_view_service import JobHistoryViewService
 from services.repo_context_service import RepoContextService
 from services.repo_index_service import RepoIndexService
@@ -107,6 +108,11 @@ class MainController:
         push_service = PushService(git_service=git_service, github_service=github_service, state_repository=self._state_repository)
         delete_service = DeleteService(github_service=github_service)
         remote_visibility_service = RemoteVisibilityService(github_service=github_service)
+        remote_repo_service = RemoteRepoService(
+            github_service=github_service,
+            state_repository=self._state_repository,
+            logger=logger,
+        )
         local_repo_service = LocalRepoService(
             git_service=git_service,
             github_service=github_service,
@@ -124,6 +130,7 @@ class MainController:
         )
         self._remote_repo_controller = RemoteRepoController(
             window=window,
+            remote_repo_service=remote_repo_service,
             github_service=github_service,
             clone_service=clone_service,
             remote_visibility_service=remote_visibility_service,
@@ -160,7 +167,9 @@ class MainController:
 
         self._window.update_status(self._build_status_snapshot())
         self._logger.info("iGitty Grundgeruest initialisiert.")
+        self._remote_repo_controller.bootstrap_remote_repositories()
         self._local_repo_controller.bootstrap_local_repositories()
+        QTimer.singleShot(0, self._remote_repo_controller.load_remote_repositories)
         QTimer.singleShot(0, self._local_repo_controller.scan_local_repositories)
 
     def _scan_local_after_clone(self) -> None:

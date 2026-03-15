@@ -45,13 +45,13 @@ STUFE 1 fuehrt jetzt eine robuste Delta-Basis fuer lokale State-Scans ein:
 
 ## DB-First-Start
 
-STUFE 2 nutzt die lokale State-DB jetzt aktiv fuer die Tabellenanzeige:
+STUFE 2 nutzt die State-DB jetzt fuer beide Hauptlisten aktiv:
 
-- beim App-Start werden bekannte lokale Repositories sofort aus SQLite geladen
-- danach startet ein Hintergrund-Refresh ueber den bestehenden Worker-Pfad
+- beim App-Start werden bekannte lokale und Remote-Repositories sofort aus SQLite geladen
+- danach starten Hintergrund-Refreshes ueber die bestehenden Worker-Pfade
 - nach dem Refresh liest die UI den aktuellen Zustand erneut aus SQLite
-- nur geaenderte oder entfernte lokale Zeilen werden gezielt aktualisiert
-- die empfohlene Aktion und die lokalen Kontextaktionen kommen aus einem zentralen Action-Resolver
+- nur geaenderte oder entfernte Zeilen werden gezielt aktualisiert
+- lokale und Remote-Kontextaktionen werden zentral aus Zustand und Regeln abgeleitet
 
 ## Lokale Tabelle
 
@@ -90,7 +90,12 @@ In der Remote-Liste kann die Sichtbarkeit eines Eintrags jetzt direkt ueber das 
 - `Auf private setzen`
 - `Auf public setzen`
 
-Nach erfolgreicher GitHub-Aktualisierung wird nur der betroffene Tabellen-Eintrag neu aufgebaut, damit die Liste sichtbar konsistent bleibt und das Logging den Sichtbarkeitswechsel dokumentiert.
+Zusetzlich gilt jetzt fuer STUFE 2:
+
+- beim Start zeigt die Remote-Liste sofort den zuletzt bekannten SQLite-Zustand
+- der GitHub-Refresh aktualisiert nur geaenderte Remote-Zeilen
+- verschwundene GitHub-Repositories werden gezielt aus der Tabelle entfernt
+- die fuer Tooltips benoetigten GitHub-Basisfelder wie `topics`, `description`, `contributors_summary`, `created_at`, `updated_at`, `pushed_at` und `size` werden ebenfalls im State-Cache gehalten
 
 ## Logging
 
@@ -136,7 +141,7 @@ python main.py
 
 ```powershell
 python -m compileall core controllers db models services ui tests
-python -m pytest tests/test_masking.py tests/test_init_db.py tests/test_local_repo_service.py tests/test_clone_service.py tests/test_push_service.py tests/test_delete_service.py tests/test_repo_struct_service.py tests/test_repo_context_service.py tests/test_state_services.py tests/test_state_view_service.py tests/test_github_service.py tests/test_remote_visibility_service.py
+python -m pytest tests/test_masking.py tests/test_init_db.py tests/test_local_repo_service.py tests/test_local_repo_controller.py tests/test_remote_repo_controller.py tests/test_remote_repo_service.py tests/test_main_window.py tests/test_repo_action_resolver.py tests/test_clone_service.py tests/test_push_service.py tests/test_delete_service.py tests/test_repo_struct_service.py tests/test_repo_context_service.py tests/test_state_services.py tests/test_state_view_service.py tests/test_github_service.py tests/test_remote_visibility_service.py tests/test_logger.py tests/test_diagnostics_window.py
 ```
 
 ## Architekturhinweise
@@ -144,6 +149,7 @@ python -m pytest tests/test_masking.py tests/test_init_db.py tests/test_local_re
 - Keine Businesslogik in Widgets oder Dialogen
 - SQLite-Zugriffe liegen in Repository- oder Service-Schichten
 - Langsame lokale Scans laufen weiterhin ausserhalb des UI-Threads
+- Langsame Remote-Refreshes synchronisieren zuerst in SQLite und aktualisieren danach nur geaenderte UI-Zeilen
 - Pushes beruecksichtigen jetzt den persistierten Repository-Status vor dem eigentlichen `git push`
 - Der Statusbereich zeigt beim erfolgreichen Remote-Laden den ermittelten GitHub-Login an, wenn die API ihn liefern konnte
 

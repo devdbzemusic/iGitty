@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, Signal
 
 from core.app_state import AppState
 from core.logger import AppLogger
@@ -16,6 +16,7 @@ from models.repo_models import RemoteRepo
 from models.view_models import StatusSnapshot
 from services.clone_service import CloneService
 from services.github_service import GitHubService
+from services.remote_repo_service import RemoteRepoService
 from services.remote_visibility_service import RemoteVisibilityService
 from ui.main_window import MainWindow
 from ui.workers.clone_worker import CloneWorker
@@ -26,9 +27,14 @@ from ui.workers.remote_visibility_worker import RemoteVisibilityWorker
 class RemoteRepoController(QObject):
     """Koordiniert UI-Aktionen fuer die Remote-GitHub-Liste."""
 
+    remote_repository_changed = Signal(object)
+    remote_repository_removed = Signal(int)
+    remote_repository_list_loaded = Signal(list)
+
     def __init__(
         self,
         window: MainWindow,
+        remote_repo_service: RemoteRepoService,
         github_service: GitHubService,
         clone_service: CloneService,
         remote_visibility_service: RemoteVisibilityService,
@@ -59,6 +65,7 @@ class RemoteRepoController(QObject):
 
         super().__init__()
         self._window = window
+        self._remote_repo_service = remote_repo_service
         self._github_service = github_service
         self._clone_service = clone_service
         self._remote_visibility_service = remote_visibility_service
@@ -75,6 +82,38 @@ class RemoteRepoController(QObject):
         self._window.remote_filter_changed.connect(self._window.set_remote_filter_text)
         self._window.clone_requested.connect(self.clone_selected_repositories)
         self._window.remote_repo_action_requested.connect(self.handle_remote_repo_action)
+        self.remote_repository_changed.connect(self._window.upsert_remote_repository)
+        self.remote_repository_removed.connect(self._window.remove_remote_repository)
+        self.remote_repository_list_loaded.connect(self._window.populate_remote_repositories)
+
+    def bootstrap_remote_repositories(self) -> None:
+        """
+        Laedt bekannte Remote-Repositories sofort aus SQLite in die UI.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Fehler beim State-Lesen werden geloggt und leeren die UI nicht ungeordnet.
+
+        Wichtige interne Logik:
+        - Die Methode bildet die DB-first-Eintrittsschicht fuer die Remote-Seite, bevor
+          der Hintergrund-Refresh spaeter nur geaenderte Eintraege nachzieht.
+        """
+
+        try:
+            cached_repositories = self._remote_repo_service.load_cached_repositories()
+            self.remote_repository_list_loaded.emit(cached_repositories)
+            self._state.remote_repo_count = len(cached_repositories)
+            self._window.update_status(self._build_status_snapshot())
+            self._logger.info(
+                f"{len(cached_repositories)} Remote-Repositories direkt aus SQLite geladen."
+            )
+        except Exception as error:  # noqa: BLE001
+            self._logger.exception(f"DB-first-Laden der Remote-Repositories fehlgeschlagen: {error}")
 
     def load_remote_repositories(self) -> None:
         """
@@ -98,7 +137,7 @@ class RemoteRepoController(QObject):
 
         self._window.set_remote_loading(True)
         self._logger.info("Starte Laden der Remote-Repositories von GitHub.")
-        self._current_worker = GitHubLoadWorker(self._github_service)
+        self._current_worker = GitHubLoadWorker(self._remote_repo_service)
         self._current_worker.repositories_loaded.connect(self._on_repositories_loaded)
         self._current_worker.loading_failed.connect(self._on_loading_failed)
         self._current_worker.start()
@@ -128,7 +167,7 @@ class RemoteRepoController(QObject):
             else "GitHub verbunden"
         )
         self._state.rate_limit = rate_limit
-        self._window.populate_remote_repositories(repositories)
+        self._apply_remote_repository_delta(repositories)
         self._window.set_remote_loading(False)
         self._window.update_status(self._build_status_snapshot())
         self._logger.info(f"{len(repositories)} Remote-Repositories erfolgreich geladen.")
@@ -384,14 +423,15 @@ class RemoteRepoController(QObject):
         self._window.append_log_line(f"{result.action_type} {result.repo_name}: {result.status} - {result.message}")
 
         if result.status == "success" and updated_repository is not None:
-            self._window.upsert_remote_repository(updated_repository)
+            cached_repository = self._remote_repo_service.upsert_cached_repository(updated_repository)
+            self.remote_repository_changed.emit(cached_repository)
             old_visibility = previous_repository.visibility if previous_repository is not None else "unknown"
             self._logger.event(
                 "state",
                 "remote_entry_updated",
                 (
-                    f"repo_name={updated_repository.name} | repo_id={updated_repository.repo_id} | "
-                    f"visibility={old_visibility}->{updated_repository.visibility}"
+                    f"repo_name={cached_repository.name} | repo_id={cached_repository.repo_id} | "
+                    f"visibility={old_visibility}->{cached_repository.visibility}"
                 ),
                 level=20,
             )
@@ -519,3 +559,65 @@ class RemoteRepoController(QObject):
         if self._visibility_worker is not None and self._visibility_worker.isRunning():
             self._logger.event("app", "shutdown_wait_for_remote_visibility_worker", level=20)
             self._visibility_worker.wait()
+
+    def _apply_remote_repository_delta(self, repositories: list[RemoteRepo]) -> None:
+        """
+        Liest nach einem Background-Refresh den aktuellen SQLite-Zustand und uebertraegt nur Deltas in die UI.
+
+        Eingabeparameter:
+        - repositories: Bereits synchronisierte Remote-Repositories aus dem Worker.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Fehler beim State-Lesen werden an den aufrufenden Workflow weitergereicht.
+
+        Wichtige interne Logik:
+        - Die UI bleibt DB-first, weil auch nach dem API-Refresh nur der persistierte
+          Cache mit der aktuellen Tabellenansicht verglichen wird.
+        """
+
+        current_repositories = self._remote_repo_service.load_cached_repositories()
+        previous_by_id = {
+            repository.repo_id: repository
+            for repository in self._window.get_remote_repositories()
+        }
+        current_by_id = {
+            repository.repo_id: repository
+            for repository in current_repositories
+        }
+
+        if not previous_by_id:
+            self.remote_repository_list_loaded.emit(current_repositories)
+            self._state.remote_repo_count = len(current_repositories)
+            return
+
+        changed_count = 0
+        removed_count = 0
+        for repo_id, repository in current_by_id.items():
+            previous_repository = previous_by_id.get(repo_id)
+            if (
+                previous_repository is None
+                or previous_repository.state_status_hash != repository.state_status_hash
+                or previous_repository.visibility != repository.visibility
+            ):
+                self.remote_repository_changed.emit(repository)
+                changed_count += 1
+
+        for repo_id in previous_by_id:
+            if repo_id in current_by_id:
+                continue
+            self.remote_repository_removed.emit(repo_id)
+            removed_count += 1
+
+        self._state.remote_repo_count = len(current_repositories)
+        self._logger.event(
+            "state",
+            "remote_ui_delta_applied",
+            (
+                f"loaded={len(repositories)} | changed={changed_count} | "
+                f"removed={removed_count} | total={len(current_repositories)}"
+            ),
+            level=20,
+        )

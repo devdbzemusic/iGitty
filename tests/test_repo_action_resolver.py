@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from models.repo_models import LocalRepo
+from models.repo_models import LocalRepo, RemoteRepo
 from services.repo_action_resolver import RepoActionResolver
 
 
@@ -57,3 +57,31 @@ def test_repo_action_resolver_marks_missing_local_path_as_no_action_case() -> No
 
     assert actions == []
     assert resolver.resolve_local_primary_action(repository) == "Pfad fehlt"
+
+
+def test_repo_action_resolver_returns_visibility_toggle_for_remote_repository() -> None:
+    """
+    Prueft, dass fuer Remote-Repositories die passende Sichtbarkeitsaktion zentral aufgeloest wird.
+    """
+
+    resolver = RepoActionResolver()
+    repository = RemoteRepo(
+        repo_id=7,
+        name="demo",
+        full_name="dbzs/demo",
+        owner="dbzs",
+        visibility="private",
+        default_branch="main",
+        language="Python",
+        archived=False,
+        fork=False,
+        clone_url="https://github.com/dbzs/demo.git",
+        ssh_url="git@github.com:dbzs/demo.git",
+        html_url="https://github.com/dbzs/demo",
+        description="Demo",
+    )
+
+    actions = resolver.resolve_remote_actions(repository)
+
+    assert actions[0].action_id == "set_public"
+    assert actions[0].recommended is True

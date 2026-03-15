@@ -111,6 +111,16 @@ class StateRepository:
                 repository.remote_host,
                 repository.remote_owner,
                 repository.remote_repo_name,
+                repository.language,
+                repository.description,
+                repository.topics_json,
+                repository.contributors_count,
+                repository.contributors_summary,
+                repository.created_at,
+                repository.updated_at,
+                repository.pushed_at,
+                repository.size_kb,
+                int(repository.is_fork),
                 repository.remote_exists_online,
                 repository.remote_visibility,
                 repository.status,
@@ -147,13 +157,23 @@ class StateRepository:
                         remote_host,
                         remote_owner,
                         remote_repo_name,
+                        language,
+                        description,
+                        topics_json,
+                        contributors_count,
+                        contributors_summary,
+                        created_at,
+                        updated_at,
+                        pushed_at,
+                        size_kb,
+                        is_fork,
                         remote_exists_online,
                         remote_visibility,
                         status,
                         last_local_scan_at,
                         last_remote_check_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     payload,
                 )
@@ -187,6 +207,16 @@ class StateRepository:
                         remote_host = ?,
                         remote_owner = ?,
                         remote_repo_name = ?,
+                        language = ?,
+                        description = ?,
+                        topics_json = ?,
+                        contributors_count = ?,
+                        contributors_summary = ?,
+                        created_at = ?,
+                        updated_at = ?,
+                        pushed_at = ?,
+                        size_kb = ?,
+                        is_fork = ?,
                         remote_exists_online = ?,
                         remote_visibility = ?,
                         status = ?,
@@ -287,6 +317,37 @@ class StateRepository:
             ).fetchone()
         return self._map_repository(row) if row else None
 
+    def fetch_repository_by_github_repo_id(self, github_repo_id: int) -> RepositoryState | None:
+        """
+        Liest einen persistierten Repository-Zustand ueber die GitHub-Repository-ID aus.
+
+        Eingabeparameter:
+        - github_repo_id: Stabile numerische Repository-ID aus der GitHub-API.
+
+        Rueckgabewerte:
+        - Persistierter Zustand oder `None`, wenn noch kein passender Eintrag existiert.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Der Lookup wird fuer Remote-Delta-Refreshes und gezielte Cache-Updates nach
+          Sichtbarkeitsaenderungen verwendet.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            row = connection.execute(
+                """
+                SELECT repositories.*, repo_status.*
+                FROM repositories
+                LEFT JOIN repo_status ON repo_status.repo_id = repositories.id
+                WHERE repositories.github_repo_id = ?
+                LIMIT 1
+                """,
+                (github_repo_id,),
+            ).fetchone()
+        return self._map_repository(row) if row else None
+
     def fetch_repositories_by_root_path(self, root_path: str) -> list[RepositoryState]:
         """
         Liest alle bekannten lokalen Repository-Zustaende unterhalb eines Wurzelpfads.
@@ -318,6 +379,37 @@ class StateRepository:
                 ORDER BY repositories.local_path
                 """,
                 (prefix,),
+            ).fetchall()
+        return [self._map_repository(row) for row in rows]
+
+    def fetch_remote_repositories(self) -> list[RepositoryState]:
+        """
+        Liest alle aktuell sichtbaren Remote-Repositories fuer die DB-first-UI aus.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Liste persistierter Remote-Repository-Zustaende.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Die Methode filtert bewusst auf den Remote-Quelltyp und blendet bereits als
+          geloescht markierte Eintraege fuer die Startansicht aus.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            rows = connection.execute(
+                """
+                SELECT repositories.*, repo_status.*
+                FROM repositories
+                LEFT JOIN repo_status ON repo_status.repo_id = repositories.id
+                WHERE repositories.source_type = 'remote'
+                  AND repositories.is_deleted = 0
+                ORDER BY LOWER(COALESCE(repositories.remote_owner, '')), LOWER(repositories.name)
+                """
             ).fetchall()
         return [self._map_repository(row) for row in rows]
 
@@ -359,6 +451,62 @@ class StateRepository:
                 """
                 UPDATE repo_status
                 SET exists_local = 1,
+                    needs_rescan = 0,
+                    last_checked_at = ?
+                WHERE repo_id = ?
+                """,
+                (seen_at, repository_id),
+            )
+            row = connection.execute(
+                """
+                SELECT repositories.*, repo_status.*
+                FROM repositories
+                LEFT JOIN repo_status ON repo_status.repo_id = repositories.id
+                WHERE repositories.id = ?
+                LIMIT 1
+                """,
+                (repository_id,),
+            ).fetchone()
+        return self._map_repository(row) if row else None
+
+    def touch_remote_repository_seen(self, repository_id: int, seen_at: str, scan_fingerprint: str) -> RepositoryState | None:
+        """
+        Aktualisiert fuer ein unveraendertes Remote-Repository nur Sichtungs- und Check-Felder.
+
+        Eingabeparameter:
+        - repository_id: ID des bekannten Remote-Repositories.
+        - seen_at: Zeitstempel des aktuellen Remote-Refresh-Laufs.
+        - scan_fingerprint: Neu berechneter Remote-Fingerprint.
+
+        Rueckgabewerte:
+        - Aktualisierter Repository-Zustand oder `None`, wenn die ID unbekannt ist.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler bei Update oder Folge-Lesezugriff.
+
+        Wichtige interne Logik:
+        - Die Methode vermeidet unnoetige Voll-Updates bei unveraenderten GitHub-Daten,
+          haelt aber Sichtbarkeit von Missing-Markern und Zeitstempeln sauber.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            connection.execute(
+                """
+                UPDATE repositories
+                SET is_missing = 0,
+                    is_deleted = 0,
+                    last_seen_at = ?,
+                    last_checked_at = ?,
+                    last_remote_check_at = ?,
+                    scan_fingerprint = ?
+                WHERE id = ?
+                """,
+                (seen_at, seen_at, seen_at, scan_fingerprint, repository_id),
+            )
+            connection.execute(
+                """
+                UPDATE repo_status
+                SET exists_remote = 1,
                     needs_rescan = 0,
                     last_checked_at = ?
                 WHERE repo_id = ?
@@ -429,6 +577,65 @@ class StateRepository:
                     """
                     UPDATE repo_status
                     SET exists_local = 0,
+                        needs_rescan = 1,
+                        health_state = 'missing',
+                        last_checked_at = ?
+                    WHERE repo_id = ?
+                    """,
+                    (seen_at, repository_id),
+                )
+                missing_count += 1
+        return missing_count
+
+    def mark_missing_remote_repositories(self, seen_repo_ids: set[int], seen_at: str) -> int:
+        """
+        Markiert zwischengespeicherte Remote-Repositories als fehlend, wenn GitHub sie nicht mehr liefert.
+
+        Eingabeparameter:
+        - seen_repo_ids: Menge aller in diesem Refresh-Lauf bestaetigten GitHub-Repository-IDs.
+        - seen_at: Zeitstempel des aktuellen Remote-Refresh-Laufs.
+
+        Rueckgabewerte:
+        - Anzahl der als fehlend markierten Remote-Eintraege.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler bei Auswahl oder Update.
+
+        Wichtige interne Logik:
+        - Remote-Eintraege werden fuer die UI per Soft-Delete entfernt, damit Delta-Refreshes
+          gezielte `remove`-Events ausloesen koennen statt die ganze Liste neu aufzubauen.
+        """
+
+        missing_count = 0
+        with sqlite_connection(self._database_file) as connection:
+            rows = connection.execute(
+                """
+                SELECT id, github_repo_id
+                FROM repositories
+                WHERE source_type = 'remote'
+                  AND github_repo_id > 0
+                  AND is_deleted = 0
+                """
+            ).fetchall()
+            for row in rows:
+                github_repo_id = int(row["github_repo_id"] or 0)
+                if github_repo_id in seen_repo_ids:
+                    continue
+                repository_id = int(row["id"])
+                connection.execute(
+                    """
+                    UPDATE repositories
+                    SET is_missing = 1,
+                        is_deleted = 1,
+                        last_checked_at = ?
+                    WHERE id = ?
+                    """,
+                    (seen_at, repository_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE repo_status
+                    SET exists_remote = 0,
                         needs_rescan = 1,
                         health_state = 'missing',
                         last_checked_at = ?
@@ -856,6 +1063,16 @@ class StateRepository:
             remote_host=str(row["remote_host"] or ""),
             remote_owner=str(row["remote_owner"] or ""),
             remote_repo_name=str(row["remote_repo_name"] or ""),
+            language=str(row["language"] or "-"),
+            description=str(row["description"] or ""),
+            topics_json=str(row["topics_json"] or "[]"),
+            contributors_count=int(row["contributors_count"] or 0),
+            contributors_summary=str(row["contributors_summary"] or ""),
+            created_at=str(row["created_at"] or ""),
+            updated_at=str(row["updated_at"] or ""),
+            pushed_at=str(row["pushed_at"] or ""),
+            size_kb=int(row["size_kb"] or 0),
+            is_fork=bool(row["is_fork"]),
             remote_exists_online=None if row["remote_exists_online"] is None else int(row["remote_exists_online"]),
             remote_visibility=str(row["remote_visibility"] or "unknown"),
             exists_local=bool(row["exists_local"]) if "exists_local" in row_keys and row["exists_local"] is not None else True,

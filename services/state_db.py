@@ -35,6 +35,16 @@ CREATE TABLE IF NOT EXISTS repositories (
     remote_host TEXT,
     remote_owner TEXT,
     remote_repo_name TEXT,
+    language TEXT,
+    description TEXT,
+    topics_json TEXT,
+    contributors_count INTEGER DEFAULT 0,
+    contributors_summary TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    pushed_at TEXT,
+    size_kb INTEGER DEFAULT 0,
+    is_fork INTEGER DEFAULT 0,
     remote_exists_online INTEGER,
     remote_visibility TEXT,
     status TEXT,
@@ -99,7 +109,9 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     unchanged_count INTEGER DEFAULT 0,
     error_count INTEGER DEFAULT 0
 );
+"""
 
+STATE_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_repositories_local_path ON repositories(local_path);
 CREATE INDEX IF NOT EXISTS idx_repositories_remote_url ON repositories(remote_url);
 CREATE INDEX IF NOT EXISTS idx_repositories_repo_key ON repositories(repo_key);
@@ -160,6 +172,16 @@ def initialize_state_database(database_file: Path) -> None:
             ("remote_host", "TEXT"),
             ("remote_owner", "TEXT"),
             ("remote_repo_name", "TEXT"),
+            ("language", "TEXT"),
+            ("description", "TEXT"),
+            ("topics_json", "TEXT"),
+            ("contributors_count", "INTEGER DEFAULT 0"),
+            ("contributors_summary", "TEXT"),
+            ("created_at", "TEXT"),
+            ("updated_at", "TEXT"),
+            ("pushed_at", "TEXT"),
+            ("size_kb", "INTEGER DEFAULT 0"),
+            ("is_fork", "INTEGER DEFAULT 0"),
             ("remote_exists_online", "INTEGER"),
             ("remote_visibility", "TEXT"),
             ("status", "TEXT"),
@@ -182,6 +204,8 @@ def initialize_state_database(database_file: Path) -> None:
             ("payload_json", "TEXT"),
         ):
             _ensure_column(connection, "repo_status_events", column_name, definition)
+
+        connection.executescript(STATE_INDEXES)
 
 
 def _ensure_column(connection, table_name: str, column_name: str, definition: str) -> None:

@@ -66,9 +66,10 @@ Der Schwerpunkt von **MVP Teil 1** liegt auf:
    - Missing-/Soft-Delete-Marker sind zu bevorzugen, wenn Repositories temporaer verschwinden.
 
 9. **DB-first-UI**
-   - Lokale Listen sollen beim Start zuerst den letzten bekannten SQLite-Zustand anzeigen.
+   - Lokale und Remote-Listen sollen beim Start zuerst den letzten bekannten SQLite-Zustand anzeigen.
    - Hintergrundsyncs sollen danach nur geaenderte Zeilen gezielt nachziehen statt komplette Listen neu aufzubauen.
    - UI-Aktionen sollen zentral aus Zustand und Regeln abgeleitet werden.
+   - Remote-Metadaten fuer Tooltips und spaetere RepoViewer-Einstiege sollen ebenfalls im State-Cache landen.
 
 ---
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from models.repo_models import LocalRepo
+from models.repo_models import LocalRepo, RemoteRepo
 
 
 @dataclass(slots=True)
@@ -116,3 +116,27 @@ class RepoActionResolver:
         if repository.remote_status == "NOT_INITIALIZED":
             return "Git initialisieren"
         return "-"
+
+    def resolve_remote_actions(self, repository: RemoteRepo) -> list[ResolvedRepoAction]:
+        """
+        Erzeugt die verfuegbaren Kontextaktionen fuer ein Remote-Repository.
+
+        Eingabeparameter:
+        - repository: Bereits fuer die UI vorbereitetes Remote-Repository.
+
+        Rueckgabewerte:
+        - Liste der aus Sichtbarkeit und Repository-Zustand abgeleiteten Remote-Aktionen.
+
+        Moegliche Fehlerfaelle:
+        - Keine; unbekannte Sichtbarkeiten liefern eine leere Liste.
+
+        Wichtige interne Logik:
+        - Die Remote-Seite nutzt denselben zentralen Resolver wie lokale Repositories,
+          damit Kontextmenues nicht mehr separat eigene Regeln nachbauen muessen.
+        """
+
+        if repository.visibility == "public":
+            return [ResolvedRepoAction("set_private", "Auf private setzen", recommended=True)]
+        if repository.visibility == "private":
+            return [ResolvedRepoAction("set_public", "Auf public setzen", recommended=True)]
+        return []

@@ -50,6 +50,16 @@ class RepositoryState:
     remote_host: str = ""
     remote_owner: str = ""
     remote_repo_name: str = ""
+    language: str = "-"
+    description: str = ""
+    topics_json: str = "[]"
+    contributors_count: int = 0
+    contributors_summary: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    pushed_at: str = ""
+    size_kb: int = 0
+    is_fork: bool = False
     remote_exists_online: int | None = None
     remote_visibility: str = "unknown"
     exists_local: bool = True

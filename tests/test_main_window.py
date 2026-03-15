@@ -6,7 +6,7 @@ import os
 
 from PySide6.QtWidgets import QApplication
 
-from models.repo_models import LocalRepo
+from models.repo_models import LocalRepo, RemoteRepo
 from ui.main_window import MainWindow
 
 
@@ -48,6 +48,39 @@ def _build_local_repo(**overrides) -> LocalRepo:
     return LocalRepo(**payload)
 
 
+def _build_remote_repo(**overrides) -> RemoteRepo:
+    """
+    Erzeugt ein Remote-Repository-Testmodell mit ueberschreibbaren Standardwerten.
+    """
+
+    payload = {
+        "repo_id": 7,
+        "name": "demo",
+        "full_name": "dbzs/demo",
+        "owner": "dbzs",
+        "visibility": "public",
+        "default_branch": "main",
+        "language": "Python",
+        "archived": False,
+        "fork": False,
+        "clone_url": "https://github.com/dbzs/demo.git",
+        "ssh_url": "git@github.com:dbzs/demo.git",
+        "html_url": "https://github.com/dbzs/demo",
+        "description": "Demo",
+        "topics": ["python"],
+        "contributors_count": 1,
+        "contributors_summary": "alice",
+        "created_at": "2026-03-01T10:00:00Z",
+        "updated_at": "2026-03-10T10:00:00Z",
+        "pushed_at": "2026-03-11T10:00:00Z",
+        "size": 123,
+        "available_actions": ["set_private"],
+        "state_status_hash": "remote-hash-1",
+    }
+    payload.update(overrides)
+    return RemoteRepo(**payload)
+
+
 def test_main_window_upserts_and_removes_local_repository_without_full_rebuild() -> None:
     """
     Prueft, dass das MainWindow lokale Eintraege gezielt ersetzen und entfernen kann.
@@ -72,3 +105,29 @@ def test_main_window_upserts_and_removes_local_repository_without_full_rebuild()
     window.remove_local_repository("C:/demo")
 
     assert window.get_local_repositories() == []
+
+
+def test_main_window_upserts_and_removes_remote_repository_without_full_rebuild() -> None:
+    """
+    Prueft, dass das MainWindow Remote-Eintraege gezielt ersetzen und entfernen kann.
+    """
+
+    _get_or_create_application()
+    window = MainWindow()
+    first_repository = _build_remote_repo()
+    changed_repository = _build_remote_repo(
+        visibility="private",
+        available_actions=["set_public"],
+        state_status_hash="remote-hash-2",
+    )
+
+    window.populate_remote_repositories([first_repository])
+    window.upsert_remote_repository(changed_repository)
+
+    repositories_after_upsert = window.get_remote_repositories()
+    assert len(repositories_after_upsert) == 1
+    assert repositories_after_upsert[0].visibility == "private"
+
+    window.remove_remote_repository(7)
+
+    assert window.get_remote_repositories() == []

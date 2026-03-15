@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QThread, Signal
 
-from services.github_service import GitHubService
+from services.remote_repo_service import RemoteRepoService
 
 
 class GitHubLoadWorker(QThread):
@@ -13,12 +13,12 @@ class GitHubLoadWorker(QThread):
     repositories_loaded = Signal(list, object)
     loading_failed = Signal(str)
 
-    def __init__(self, github_service: GitHubService) -> None:
+    def __init__(self, remote_repo_service: RemoteRepoService) -> None:
         """
         Speichert den auszufuehrenden GitHub-Service fuer den Threadlauf.
 
         Eingabeparameter:
-        - github_service: Serviceinstanz fuer den eigentlichen API-Zugriff.
+        - remote_repo_service: Serviceinstanz fuer GitHub-Zugriff plus SQLite-Delta-Sync.
 
         Rueckgabewerte:
         - Keine.
@@ -31,7 +31,7 @@ class GitHubLoadWorker(QThread):
         """
 
         super().__init__()
-        self._github_service = github_service
+        self._remote_repo_service = remote_repo_service
 
     def run(self) -> None:
         """
@@ -51,7 +51,7 @@ class GitHubLoadWorker(QThread):
         """
 
         try:
-            repositories, rate_limit = self._github_service.fetch_remote_repositories()
+            repositories, rate_limit = self._remote_repo_service.sync_repositories()
             self.repositories_loaded.emit(repositories, rate_limit)
         except Exception as error:  # noqa: BLE001
             self.loading_failed.emit(str(error))
