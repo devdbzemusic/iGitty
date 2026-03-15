@@ -43,7 +43,28 @@ CREATE TABLE IF NOT EXISTS repo_snapshots (
     remote_url TEXT,
     status TEXT NOT NULL,
     reversible_flag INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    repo_key TEXT,
+    snapshot_timestamp TEXT,
+    branch TEXT,
+    head_commit TEXT,
+    file_count INTEGER DEFAULT 0,
+    change_count INTEGER DEFAULT 0,
+    scan_fingerprint TEXT,
+    structure_hash TEXT,
+    structure_item_count INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS repo_snapshot_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id INTEGER NOT NULL,
+    relative_path TEXT NOT NULL,
+    path_type TEXT NOT NULL,
+    extension TEXT,
+    content_hash TEXT,
+    git_status TEXT,
+    is_deleted INTEGER DEFAULT 0,
+    FOREIGN KEY(snapshot_id) REFERENCES repo_snapshots(id)
 );
 
 CREATE TABLE IF NOT EXISTS clone_history (
@@ -127,8 +148,18 @@ CREATE TABLE IF NOT EXISTS repo_tree_items (
     last_modified TEXT,
     git_status TEXT,
     last_commit_hash TEXT,
-    version_scan_timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+    version_scan_timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+    is_deleted INTEGER DEFAULT 0,
+    content_hash TEXT,
+    last_seen_at TEXT
 );
+"""
+
+REPO_STRUCT_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_repo_tree_items_repo ON repo_tree_items(repo_identifier, source_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_tree_items_unique_path
+ON repo_tree_items(repo_identifier, source_type, relative_path);
+CREATE INDEX IF NOT EXISTS idx_repo_tree_items_extension ON repo_tree_items(extension);
 """
 
 
@@ -161,9 +192,31 @@ def initialize_databases(paths: RuntimePaths) -> None:
         _ensure_column(connection, "clone_history", "reversible_flag", "INTEGER DEFAULT 1")
         _ensure_column(connection, "action_history", "repo_owner", "TEXT")
         _ensure_column(connection, "action_history", "reversible_flag", "INTEGER DEFAULT 0")
+        _ensure_column(connection, "repo_snapshots", "repo_key", "TEXT")
+        _ensure_column(connection, "repo_snapshots", "snapshot_timestamp", "TEXT")
+        _ensure_column(connection, "repo_snapshots", "branch", "TEXT")
+        _ensure_column(connection, "repo_snapshots", "head_commit", "TEXT")
+        _ensure_column(connection, "repo_snapshots", "file_count", "INTEGER DEFAULT 0")
+        _ensure_column(connection, "repo_snapshots", "change_count", "INTEGER DEFAULT 0")
+        _ensure_column(connection, "repo_snapshots", "scan_fingerprint", "TEXT")
+        _ensure_column(connection, "repo_snapshots", "structure_hash", "TEXT")
+        _ensure_column(connection, "repo_snapshots", "structure_item_count", "INTEGER DEFAULT 0")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_repo_snapshots_repo_key_time ON repo_snapshots(repo_key, snapshot_timestamp)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_repo_snapshot_files_snapshot_id ON repo_snapshot_files(snapshot_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_repo_snapshot_files_path ON repo_snapshot_files(snapshot_id, relative_path)"
+        )
 
     with sqlite_connection(paths.repo_struct_db_file) as connection:
         connection.executescript(REPO_STRUCT_SCHEMA)
+        _ensure_column(connection, "repo_tree_items", "is_deleted", "INTEGER DEFAULT 0")
+        _ensure_column(connection, "repo_tree_items", "content_hash", "TEXT")
+        _ensure_column(connection, "repo_tree_items", "last_seen_at", "TEXT")
+        connection.executescript(REPO_STRUCT_INDEXES)
 
     initialize_state_database(paths.state_db_file)
 

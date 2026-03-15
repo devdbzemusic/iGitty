@@ -149,6 +149,100 @@ class GitService:
 
         return self._run_git(repo_path, ["rev-parse", "HEAD"], allow_failure=True).strip()
 
+    def get_ref_commit_hash(self, repo_path: Path, ref_name: str) -> str:
+        """
+        Liest den Commit-Hash einer beliebigen Git-Referenz aus.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+        - ref_name: Zu pruefende Referenz wie `origin/main` oder ein Tag.
+
+        Rueckgabewerte:
+        - Commit-Hash der Referenz oder Leerstring bei unbekannter Referenz.
+
+        Moegliche Fehlerfaelle:
+        - Git-Fehler werden defensiv als Leerstring behandelt.
+
+        Wichtige interne Logik:
+        - Die Methode dient der Sync-Analyse fuer exakte Vergleiche zwischen lokalem
+          HEAD, Remote-HEAD und weiterer Diagnose-Logik.
+        """
+
+        if not ref_name.strip():
+            return ""
+        return self._run_git(repo_path, ["rev-parse", ref_name], allow_failure=True).strip()
+
+    def get_merge_base_commit(self, repo_path: Path, left_ref: str, right_ref: str) -> str:
+        """
+        Liest den letzten gemeinsamen Commit zweier Git-Referenzen aus.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+        - left_ref: Erste Referenz, zum Beispiel `HEAD`.
+        - right_ref: Zweite Referenz, zum Beispiel `origin/main`.
+
+        Rueckgabewerte:
+        - Commit-Hash der Merge-Base oder Leerstring, wenn keine Basis ermittelt werden kann.
+
+        Moegliche Fehlerfaelle:
+        - Git-Fehler werden defensiv als Leerstring behandelt.
+
+        Wichtige interne Logik:
+        - Die Merge-Base ist fuer die Unterscheidung von `LOCAL_AHEAD`, `REMOTE_AHEAD`
+          und `DIVERGED` zentral und wird deshalb direkt gekapselt.
+        """
+
+        if not left_ref.strip() or not right_ref.strip():
+            return ""
+        return self._run_git(repo_path, ["merge-base", left_ref, right_ref], allow_failure=True).strip()
+
+    def fetch_remote_updates(self, repo_path: Path, remote_name: str = "origin") -> bool:
+        """
+        Fuehrt ein lesendes `git fetch` fuer den angegebenen Remote aus.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+        - remote_name: Name des abzurufenden Remotes.
+
+        Rueckgabewerte:
+        - `True`, wenn der Fetch erfolgreich war, sonst `False`.
+
+        Moegliche Fehlerfaelle:
+        - Git- oder Netzwerkfehler werden nicht geworfen, sondern als `False` geliefert.
+
+        Wichtige interne Logik:
+        - Die Methode erlaubt eine aktuelle Sync-Analyse, ohne dabei schreibende
+          Repository-Operationen wie Pull oder Merge zu starten.
+        """
+
+        if not remote_name.strip():
+            return False
+        try:
+            if self._logger is not None:
+                self._logger.event(
+                    "git",
+                    "fetch_remote_updates",
+                    f"repo_path={repo_path} | remote_name={remote_name}",
+                )
+            subprocess.run(
+                ["git", "fetch", "--prune", remote_name],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=True,
+            )
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError) as error:
+            if self._logger is not None:
+                self._logger.event(
+                    "git",
+                    "command_expected_failure",
+                    f"repo_path={repo_path} | args=fetch --prune {remote_name} | error={error}",
+                )
+            return False
+
     def get_last_commit_date(self, repo_path: Path) -> str:
         """
         Liest das Datum des letzten Commits im ISO-Format aus.
@@ -227,6 +321,62 @@ class GitService:
         """
 
         return self._run_git(repo_path, ["status", "--porcelain"], allow_failure=True).splitlines()
+
+    def get_status_porcelain_map(self, repo_path: Path) -> dict[str, str]:
+        """
+        Wandelt den Porzellanstatus eines Repositories in eine Pfad-zu-Status-Zuordnung um.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+
+        Rueckgabewerte:
+        - Dictionary mit relativem Pfad als Schluessel und kompaktem Status als Wert.
+
+        Moegliche Fehlerfaelle:
+        - Fehlerhafte oder unerwartete Statuszeilen werden defensiv uebersprungen.
+
+        Wichtige interne Logik:
+        - Die Methode vereinheitlicht die Auswertung von `git status --porcelain`, damit
+          Struktur-Scanner und spaetere RepoViewer-Ansichten dieselbe Interpretation teilen.
+        """
+
+        status_map: dict[str, str] = {}
+        for line in self.get_status_porcelain(repo_path):
+            if len(line) < 4:
+                continue
+            status_code = line[:2].strip() or "??"
+            raw_path = line[3:].strip()
+            if " -> " in raw_path:
+                raw_path = raw_path.split(" -> ", 1)[1]
+            normalized_path = raw_path.replace("\\", "/")
+            if normalized_path:
+                status_map[normalized_path] = status_code
+        return status_map
+
+    def get_last_commit_hash_for_path(self, repo_path: Path, relative_path: str) -> str:
+        """
+        Liest den letzten Commit-Hash fuer einen einzelnen relativen Pfad aus.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+        - relative_path: Relativer Datei- oder Ordnerpfad innerhalb des Repositories.
+
+        Rueckgabewerte:
+        - Commit-Hash oder Leerstring, wenn fuer den Pfad noch kein Commit bekannt ist.
+
+        Moegliche Fehlerfaelle:
+        - Git-Fehler werden defensiv als Leerstring behandelt.
+
+        Wichtige interne Logik:
+        - Die Methode bleibt optional teuer und wird nur von Strukturscans mit aktivierten
+          Commit-Details genutzt.
+        """
+
+        return self._run_git(
+            repo_path,
+            ["log", "-1", "--pretty=format:%H", "--", relative_path],
+            allow_failure=True,
+        ).strip()
 
     def get_ahead_behind_counts(
         self,

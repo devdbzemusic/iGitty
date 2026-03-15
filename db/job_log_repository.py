@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from db.sqlite_manager import sqlite_connection
+from models.evolution_models import RepositorySnapshot, RepositorySnapshotFile
 from models.job_models import (
     ActionRecord,
     ActionSummary,
@@ -305,8 +307,19 @@ class JobLogRepository:
             connection.execute(
                 """
                 INSERT INTO repo_snapshots
-                (job_id, action_type, source_type, repo_name, repo_owner, local_path, remote_url, status, reversible_flag)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    job_id,
+                    action_type,
+                    source_type,
+                    repo_name,
+                    repo_owner,
+                    local_path,
+                    remote_url,
+                    status,
+                    reversible_flag,
+                    snapshot_timestamp
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.job_id,
@@ -318,8 +331,209 @@ class JobLogRepository:
                     record.remote_url,
                     record.status,
                     int(record.reversible_flag),
+                    datetime.now(timezone.utc).isoformat(),
                 ),
             )
+
+    def add_repository_snapshot(self, snapshot: RepositorySnapshot) -> RepositorySnapshot:
+        """
+        Schreibt einen vollstaendigen Repository-Snapshot inklusive Dateimenge in die Datenbank.
+
+        Eingabeparameter:
+        - snapshot: Vollstaendig vorbereiteter Repository-Snapshot.
+
+        Rueckgabewerte:
+        - Persistierter Snapshot inklusive vergebener Datenbank-ID.
+
+        Moegliche Fehlerfaelle:
+        - Datenbankfehler beim Schreiben des Snapshot-Kopfes oder der Dateieintraege.
+
+        Wichtige interne Logik:
+        - Die Methode nutzt bewusst dieselbe `repo_snapshots`-Tabelle wie die bestehenden
+          Job-Snapshots und erweitert sie damit zu einer Zeitreise- und Evolutionsquelle.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO repo_snapshots
+                (
+                    job_id,
+                    action_type,
+                    source_type,
+                    repo_name,
+                    repo_owner,
+                    local_path,
+                    remote_url,
+                    status,
+                    reversible_flag,
+                    repo_key,
+                    snapshot_timestamp,
+                    branch,
+                    head_commit,
+                    file_count,
+                    change_count,
+                    scan_fingerprint,
+                    structure_hash,
+                    structure_item_count
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot.job_id,
+                    snapshot.action_type,
+                    snapshot.source_type,
+                    snapshot.repo_name,
+                    snapshot.repo_owner,
+                    snapshot.local_path,
+                    snapshot.remote_url,
+                    snapshot.status,
+                    0,
+                    snapshot.repo_key,
+                    snapshot.snapshot_timestamp,
+                    snapshot.branch,
+                    snapshot.head_commit,
+                    snapshot.file_count,
+                    snapshot.change_count,
+                    snapshot.scan_fingerprint,
+                    snapshot.structure_hash,
+                    snapshot.structure_item_count,
+                ),
+            )
+            snapshot.id = int(cursor.lastrowid)
+            if snapshot.files:
+                connection.executemany(
+                    """
+                    INSERT INTO repo_snapshot_files
+                    (snapshot_id, relative_path, path_type, extension, content_hash, git_status, is_deleted)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            int(snapshot.id),
+                            file_entry.relative_path,
+                            file_entry.path_type,
+                            file_entry.extension,
+                            file_entry.content_hash,
+                            file_entry.git_status,
+                            int(file_entry.is_deleted),
+                        )
+                        for file_entry in snapshot.files
+                    ],
+                )
+        return snapshot
+
+    def fetch_recent_repository_snapshot(self, repo_key: str) -> RepositorySnapshot | None:
+        """
+        Laedt den juengsten Repository-Snapshot zu einem stabilen `repo_key`.
+
+        Eingabeparameter:
+        - repo_key: Interner Repository-Schluessel aus dem State-Layer.
+
+        Rueckgabewerte:
+        - Juengster Snapshot oder `None`.
+
+        Moegliche Fehlerfaelle:
+        - Datenbankfehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Nur Snapshot-Eintraege mit gesetztem `repo_key` werden beruecksichtigt, damit
+          alte Job-Snapshots ohne Evolutionsdaten nicht versehentlich gemischt werden.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM repo_snapshots
+                WHERE repo_key = ?
+                  AND COALESCE(snapshot_timestamp, '') <> ''
+                ORDER BY snapshot_timestamp DESC, id DESC
+                LIMIT 1
+                """,
+                (repo_key,),
+            ).fetchone()
+        return self._map_repository_snapshot(row) if row is not None else None
+
+    def fetch_repository_snapshots(self, repo_key: str, limit: int = 32, include_files: bool = True) -> list[RepositorySnapshot]:
+        """
+        Laedt die juengste Snapshot-Reihe eines Repositories fuer Timeline und Analyse.
+
+        Eingabeparameter:
+        - repo_key: Interner Repository-Schluessel aus dem State-Layer.
+        - limit: Maximale Anzahl geladener Snapshots.
+        - include_files: Laedt bei Bedarf zusaetzlich die Dateimenge fuer Diff-Analysen.
+
+        Rueckgabewerte:
+        - Liste der Snapshots in aufsteigender zeitlicher Reihenfolge.
+
+        Moegliche Fehlerfaelle:
+        - Datenbankfehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Die Rueckgabe wird chronologisch sortiert, damit Timeline und Evolutionsanalyse
+          direkt aufeinanderfolgende Vergleichspaare bilden koennen.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM repo_snapshots
+                WHERE repo_key = ?
+                  AND COALESCE(snapshot_timestamp, '') <> ''
+                ORDER BY snapshot_timestamp DESC, id DESC
+                LIMIT ?
+                """,
+                (repo_key, limit),
+            ).fetchall()
+        snapshots = [self._map_repository_snapshot(row) for row in rows]
+        snapshots.reverse()
+        if include_files:
+            for snapshot in snapshots:
+                if snapshot.id is None:
+                    continue
+                snapshot.files = self.fetch_snapshot_files(int(snapshot.id))
+        return snapshots
+
+    def fetch_snapshot_files(self, snapshot_id: int) -> list[RepositorySnapshotFile]:
+        """
+        Laedt die zu einem Snapshot gehoerige persistierte Dateimenge.
+
+        Eingabeparameter:
+        - snapshot_id: Datenbank-ID des Snapshot-Kopfes.
+
+        Rueckgabewerte:
+        - Liste der zugehoerigen Snapshot-Dateieintraege.
+
+        Moegliche Fehlerfaelle:
+        - Datenbankfehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Die Dateitabelle bleibt absichtlich separat, damit Kopfabfragen klein und schnell bleiben.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            rows = connection.execute(
+                """
+                SELECT relative_path, path_type, extension, content_hash, git_status, is_deleted
+                FROM repo_snapshot_files
+                WHERE snapshot_id = ?
+                ORDER BY relative_path
+                """,
+                (snapshot_id,),
+            ).fetchall()
+        return [
+            RepositorySnapshotFile(
+                relative_path=str(row["relative_path"] or ""),
+                path_type=str(row["path_type"] or "file"),
+                extension=str(row["extension"] or ""),
+                content_hash=str(row["content_hash"] or ""),
+                git_status=str(row["git_status"] or "clean"),
+                is_deleted=bool(row["is_deleted"]),
+            )
+            for row in rows
+        ]
 
     def fetch_last_clone_action(self, repo_name: str, remote_url: str = "", repo_id: int = 0) -> ActionSummary | None:
         """
@@ -534,6 +748,46 @@ class JobLogRepository:
             status=row["status"],
             timestamp=row["timestamp"],
             message=row["message"] or "",
+        )
+
+    def _map_repository_snapshot(self, row) -> RepositorySnapshot:
+        """
+        Wandelt eine SQLite-Zeile aus `repo_snapshots` in das Evolutionsmodell um.
+
+        Eingabeparameter:
+        - row: Bereits geladene SQLite-Row.
+
+        Rueckgabewerte:
+        - Vollstaendig gemappter RepositorySnapshot.
+
+        Moegliche Fehlerfaelle:
+        - Fehlende Spalten werden ueber bestehende Defaultwerte defensiv behandelt.
+
+        Wichtige interne Logik:
+        - Alte Job-Snapshots ohne erweiterte Felder bleiben lesbar und liefern einfach
+          leere Evolutionsfelder statt die Analyse zu blockieren.
+        """
+
+        row_keys = set(row.keys())
+        return RepositorySnapshot(
+            id=int(row["id"]),
+            job_id=str(row["job_id"] or ""),
+            repo_key=str(row["repo_key"] or ""),
+            snapshot_timestamp=str(row["snapshot_timestamp"] or row["created_at"] or ""),
+            branch=str(row["branch"] or ""),
+            head_commit=str(row["head_commit"] or ""),
+            file_count=int(row["file_count"] or 0) if "file_count" in row_keys else 0,
+            change_count=int(row["change_count"] or 0) if "change_count" in row_keys else 0,
+            scan_fingerprint=str(row["scan_fingerprint"] or ""),
+            structure_hash=str(row["structure_hash"] or ""),
+            action_type=str(row["action_type"] or "snapshot"),
+            source_type=str(row["source_type"] or "local"),
+            repo_name=str(row["repo_name"] or ""),
+            repo_owner=str(row["repo_owner"] or ""),
+            local_path=str(row["local_path"] or ""),
+            remote_url=str(row["remote_url"] or ""),
+            status=str(row["status"] or "success"),
+            structure_item_count=int(row["structure_item_count"] or 0) if "structure_item_count" in row_keys else 0,
         )
 
     def _add_specialized_history_record(self, record: ActionRecord) -> None:

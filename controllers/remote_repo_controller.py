@@ -18,6 +18,8 @@ from services.clone_service import CloneService
 from services.github_service import GitHubService
 from services.remote_repo_service import RemoteRepoService
 from services.remote_visibility_service import RemoteVisibilityService
+from services.repository_snapshot_service import RepositorySnapshotService
+from services.repository_sync_orchestrator import RepositorySyncOrchestrator
 from ui.main_window import MainWindow
 from ui.workers.clone_worker import CloneWorker
 from ui.workers.github_load_worker import GitHubLoadWorker
@@ -41,6 +43,8 @@ class RemoteRepoController(QObject):
         state: AppState,
         logger: AppLogger,
         job_log_repository: JobLogRepository,
+        repository_snapshot_service: RepositorySnapshotService | None = None,
+        sync_orchestrator: RepositorySyncOrchestrator | None = None,
         post_clone_callback=None,
     ) -> None:
         """
@@ -72,6 +76,8 @@ class RemoteRepoController(QObject):
         self._state = state
         self._logger = logger
         self._job_log_repository = job_log_repository
+        self._repository_snapshot_service = repository_snapshot_service
+        self._sync_orchestrator = sync_orchestrator
         self._post_clone_callback = post_clone_callback
         self._current_worker: GitHubLoadWorker | None = None
         self._clone_worker: CloneWorker | None = None
@@ -167,6 +173,8 @@ class RemoteRepoController(QObject):
             else "GitHub verbunden"
         )
         self._state.rate_limit = rate_limit
+        if self._sync_orchestrator is not None:
+            self._sync_orchestrator.reconcile_cached_states()
         self._apply_remote_repository_delta(repositories)
         self._window.set_remote_loading(False)
         self._window.update_status(self._build_status_snapshot())
@@ -233,26 +241,7 @@ class RemoteRepoController(QObject):
         - Die UI liefert nur die Auswahl; die eigentliche Clone-Logik bleibt komplett in Service und Worker.
         """
 
-        if self._clone_worker is not None and self._clone_worker.isRunning():
-            return
-
-        repositories = self._window.selected_remote_repositories()
-        if not repositories:
-            self._window.append_log_line("Kein Remote-Repository zum Klonen ausgewaehlt.")
-            return
-
-        job_id = str(uuid4())
-        self._window.set_clone_loading(True)
-        self._logger.info(f"Starte Clone fuer {len(repositories)} ausgewaehlte Remote-Repositories.")
-        self._clone_worker = CloneWorker(
-            clone_service=self._clone_service,
-            repositories=repositories,
-            target_root=Path(self._state.current_target_dir),
-            job_id=job_id,
-        )
-        self._clone_worker.clone_finished.connect(self._on_clone_finished)
-        self._clone_worker.clone_failed.connect(self._on_clone_failed)
-        self._clone_worker.start()
+        self._start_clone_for_repositories(self._window.selected_remote_repositories())
 
     def _on_clone_finished(self, results: list) -> None:
         """
@@ -319,6 +308,44 @@ class RemoteRepoController(QObject):
         self._logger.info(f"Clone-Worker fehlgeschlagen: {error_message}")
         self._window.append_log_line(f"Fehler: {error_message}")
 
+    def _start_clone_for_repositories(self, repositories: list[RemoteRepo]) -> None:
+        """
+        Startet einen Clone-Workflow fuer eine explizite Liste von Remote-Repositories.
+
+        Eingabeparameter:
+        - repositories: Ein oder mehrere zu klonende Remote-Repository-Modelle.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Bereits laufende Clone-Worker werden defensiv nicht ueberlappt.
+
+        Wichtige interne Logik:
+        - Die Hilfsmethode wird sowohl fuer Batch-Checkboxen als auch fuer zustandsabhaengige
+          Einzelaktionen aus Kontextmenues und Menues verwendet.
+        """
+
+        if self._clone_worker is not None and self._clone_worker.isRunning():
+            return
+
+        if not repositories:
+            self._window.append_log_line("Kein Remote-Repository zum Klonen ausgewaehlt.")
+            return
+
+        job_id = str(uuid4())
+        self._window.set_clone_loading(True)
+        self._logger.info(f"Starte Clone fuer {len(repositories)} ausgewaehlte Remote-Repositories.")
+        self._clone_worker = CloneWorker(
+            clone_service=self._clone_service,
+            repositories=repositories,
+            target_root=Path(self._state.current_target_dir),
+            job_id=job_id,
+        )
+        self._clone_worker.clone_finished.connect(self._on_clone_finished)
+        self._clone_worker.clone_failed.connect(self._on_clone_failed)
+        self._clone_worker.start()
+
     def handle_remote_repo_action(self, repo_ref, action_name: str) -> None:
         """
         Fuehrt eine Kontextaktion fuer genau ein Remote-Repository aus.
@@ -343,6 +370,13 @@ class RemoteRepoController(QObject):
         repository = self._resolve_remote_repository(repo_ref)
         if repository is None:
             self._window.append_log_line("Kontextaktion konnte keinem Remote-Repository zugeordnet werden.")
+            return
+
+        if action_name == "clone":
+            self._start_clone_for_repositories([repository])
+            return
+        if action_name in {"open_repo_explorer", "show_history", "show_diagnostics", "open_repository"}:
+            self._window.remote_repo_open_requested.emit(repo_ref, "remote")
             return
 
         if self._visibility_worker is not None and self._visibility_worker.isRunning():
@@ -424,7 +458,25 @@ class RemoteRepoController(QObject):
 
         if result.status == "success" and updated_repository is not None:
             cached_repository = self._remote_repo_service.upsert_cached_repository(updated_repository)
+            if self._sync_orchestrator is not None:
+                self._sync_orchestrator.reconcile_cached_states()
+                refreshed_repository = next(
+                    (
+                        candidate
+                        for candidate in self._remote_repo_service.load_cached_repositories()
+                        if candidate.repo_id == cached_repository.repo_id
+                    ),
+                    cached_repository,
+                )
+                cached_repository = refreshed_repository
             self.remote_repository_changed.emit(cached_repository)
+            if self._repository_snapshot_service is not None:
+                self._repository_snapshot_service.capture_snapshot_for_github_repo_id(
+                    cached_repository.repo_id,
+                    trigger_type=result.action_type,
+                    force=True,
+                    job_id=result.job_id,
+                )
             old_visibility = previous_repository.visibility if previous_repository is not None else "unknown"
             self._logger.event(
                 "state",

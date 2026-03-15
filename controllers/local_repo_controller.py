@@ -13,6 +13,7 @@ from db.job_log_repository import JobLogRepository
 from models.job_models import JobLogEntry
 from models.view_models import StatusSnapshot
 from services.local_repo_service import LocalRepoService
+from services.repository_sync_orchestrator import RepositorySyncOrchestrator
 from ui.main_window import MainWindow
 from ui.workers.local_scan_worker import LocalScanWorker
 
@@ -31,6 +32,7 @@ class LocalRepoController(QObject):
         state: AppState,
         logger: AppLogger,
         job_log_repository: JobLogRepository,
+        sync_orchestrator: RepositorySyncOrchestrator | None = None,
     ) -> None:
         """
         Verbindet UI-Signale mit dem lokalen Scan-Service.
@@ -58,6 +60,7 @@ class LocalRepoController(QObject):
         self._state = state
         self._logger = logger
         self._job_log_repository = job_log_repository
+        self._sync_orchestrator = sync_orchestrator
         self._current_worker: LocalScanWorker | None = None
         self._last_loaded_root_path: Path | None = None
 
@@ -149,6 +152,8 @@ class LocalRepoController(QObject):
         - Aktualisiert die Tabelle erst nach vollstaendigem Scan, damit das UI konsistent bleibt.
         """
 
+        if self._sync_orchestrator is not None:
+            self._sync_orchestrator.reconcile_cached_states()
         self._apply_local_repository_delta()
         self._window.set_local_loading(False)
         self._window.update_status(self._build_status_snapshot())
@@ -271,7 +276,22 @@ class LocalRepoController(QObject):
                 if candidate.full_path == local_path:
                     previous_repository = candidate
                     break
-            repository = self._local_repo_service.refresh_repository(Path(local_path))
+            repository = None
+            if self._sync_orchestrator is not None:
+                refreshed_local_repository, _refreshed_remote_repository = self._sync_orchestrator.refresh_repository(
+                    local_path=local_path,
+                    hard_refresh=True,
+                )
+                if refreshed_local_repository is not None:
+                    repository = self._local_repo_service.load_cached_repositories(
+                        self._last_loaded_root_path or Path(self._state.current_target_dir)
+                    )
+                    repository = next(
+                        (candidate for candidate in repository if candidate.full_path == local_path),
+                        None,
+                    )
+            if repository is None:
+                repository = self._local_repo_service.refresh_repository(Path(local_path))
             if repository is None:
                 self._logger.warning(f"Lokaler Eintrag konnte nicht aktualisiert werden: {local_path}")
                 return

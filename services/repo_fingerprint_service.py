@@ -107,6 +107,17 @@ class RepoFingerprintService:
             "dirty_hint": repository.dirty_hint,
             "needs_rescan": repository.needs_rescan,
             "status": repository.status,
+            "linked_repo_key": repository.linked_repo_key,
+            "linked_local_path": repository.linked_local_path,
+            "link_type": repository.link_type,
+            "link_confidence": repository.link_confidence,
+            "local_head_commit": repository.local_head_commit,
+            "remote_head_commit": repository.remote_head_commit,
+            "merge_base_commit": repository.merge_base_commit,
+            "last_sync_decision": repository.last_sync_decision,
+            "sync_policy": repository.sync_policy,
+            "recommended_action": repository.recommended_action,
+            "available_actions_json": repository.available_actions_json,
         }
         return self._hash_payload(payload)
 

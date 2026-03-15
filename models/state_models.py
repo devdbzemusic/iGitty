@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from models.repo_models import RateLimitInfo, RemoteRepo
+
 
 @dataclass(slots=True)
 class RepositoryState:
@@ -78,6 +80,17 @@ class RepositoryState:
     status: str = "NOT_INITIALIZED"
     last_local_scan_at: str = ""
     last_remote_check_at: str = ""
+    linked_repo_key: str = ""
+    linked_local_path: str = ""
+    link_type: str = ""
+    link_confidence: int = 0
+    recommended_action: str = "-"
+    available_actions_json: str = "[]"
+    local_head_commit: str = ""
+    remote_head_commit: str = ""
+    merge_base_commit: str = ""
+    last_sync_decision: str = ""
+    sync_policy: str = "manual"
 
 
 @dataclass(slots=True)
@@ -201,3 +214,72 @@ class RepoFileDeltaStats:
     updated_count: int = 0
     deleted_count: int = 0
     unchanged_count: int = 0
+
+
+@dataclass(slots=True)
+class RepositorySyncSnapshot:
+    """
+    Fasst einen orchestrierten Synchronisationslauf ueber lokale und Remote-Repositories zusammen.
+
+    Eingabeparameter:
+    - local_repositories: Lokal synchronisierte Repository-Zustaende.
+    - remote_repositories: Remote-Repository-Sicht fuer die UI.
+    - rate_limit: Aktueller GitHub-Rate-Limit-Stand.
+    - hard_refresh: Kennzeichnet einen erzwungenen Vollscan.
+
+    Rueckgabewerte:
+    - Keine.
+
+    Moegliche Fehlerfaelle:
+    - Keine direkt in der Dataklasse.
+
+    Wichtige interne Logik:
+    - Das Modell dient dem neuen RepositorySyncOrchestrator als klarer Rueckgabevertrag,
+      ohne Controller oder UI bereits auf konkrete Scan-Implementierungen festzunageln.
+    """
+
+    local_repositories: list[RepositoryState]
+    remote_repositories: list[RemoteRepo]
+    rate_limit: RateLimitInfo
+    hard_refresh: bool = False
+
+
+@dataclass(slots=True)
+class RepoLink:
+    """
+    Beschreibt die persistierte Verknuepfung zwischen lokalem und entferntem Repository.
+
+    Eingabeparameter:
+    - state_repo_id: Zugehoerige lokale Repository-ID aus `igitty_state.db`.
+    - github_repo_id: Zugehoerige GitHub-Repository-ID.
+    - local_path: Lokaler Repository-Pfad.
+    - remote_url: Verknuepfte Remote-URL.
+    - remote_owner: GitHub-Owner des verknuepften Remotes.
+    - remote_name: GitHub-Repository-Name des verknuepften Remotes.
+    - link_type: Technischer Link-Typ wie `exact`, `url_match`, `github_id_match`, `name_match` oder `manual`.
+    - link_confidence: Fachliche Vertrauensstufe des Matches.
+    - is_active: Kennzeichnet die aktuell gueltige Verknuepfung.
+    - last_verified_at: Zeitpunkt der letzten Pairing-Pruefung.
+
+    Rueckgabewerte:
+    - Keine.
+
+    Moegliche Fehlerfaelle:
+    - Keine direkt in der Dataklasse.
+
+    Wichtige interne Logik:
+    - Unsichere Namensmatches koennen mit niedrigerer Confidence oder inaktiv markiert
+      werden, ohne die bisherige stabile Kopplung zu ueberschreiben.
+    """
+
+    id: int | None = None
+    state_repo_id: int = 0
+    github_repo_id: int = 0
+    local_path: str = ""
+    remote_url: str = ""
+    remote_owner: str = ""
+    remote_name: str = ""
+    link_type: str = ""
+    link_confidence: int = 0
+    is_active: bool = True
+    last_verified_at: str = ""

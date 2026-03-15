@@ -8,7 +8,9 @@ from db.sqlite_manager import sqlite_connection
 from models.state_models import (
     RepoFileDeltaStats,
     RepoFileState,
+    RepoLink,
     RepoStatusEvent,
+    ScanRunRecord,
     RepositoryState,
 )
 
@@ -127,6 +129,17 @@ class StateRepository:
                 repository.status,
                 repository.last_local_scan_at,
                 repository.last_remote_check_at,
+                repository.linked_repo_key,
+                repository.linked_local_path,
+                repository.link_type,
+                repository.link_confidence,
+                repository.local_head_commit,
+                repository.remote_head_commit,
+                repository.merge_base_commit,
+                repository.last_sync_decision,
+                repository.sync_policy,
+                repository.recommended_action,
+                repository.available_actions_json,
             )
 
             if existing is None:
@@ -172,9 +185,20 @@ class StateRepository:
                         remote_visibility,
                         status,
                         last_local_scan_at,
-                        last_remote_check_at
+                        last_remote_check_at,
+                        linked_repo_key,
+                        linked_local_path,
+                        link_type,
+                        link_confidence,
+                        local_head_commit,
+                        remote_head_commit,
+                        merge_base_commit,
+                        last_sync_decision,
+                        sync_policy,
+                        recommended_action,
+                        available_actions_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     payload,
                 )
@@ -222,7 +246,18 @@ class StateRepository:
                         remote_visibility = ?,
                         status = ?,
                         last_local_scan_at = ?,
-                        last_remote_check_at = ?
+                        last_remote_check_at = ?,
+                        linked_repo_key = ?,
+                        linked_local_path = ?,
+                        link_type = ?,
+                        link_confidence = ?,
+                        local_head_commit = ?,
+                        remote_head_commit = ?,
+                        merge_base_commit = ?,
+                        last_sync_decision = ?,
+                        sync_policy = ?,
+                        recommended_action = ?,
+                        available_actions_json = ?
                     WHERE id = ?
                     """,
                     (*payload, repository.id),
@@ -349,6 +384,37 @@ class StateRepository:
             ).fetchone()
         return self._map_repository(row) if row else None
 
+    def fetch_repository_by_repo_key(self, repo_key: str) -> RepositoryState | None:
+        """
+        Liest einen persistierten Repository-Zustand ueber seinen stabilen internen Schluessel.
+
+        Eingabeparameter:
+        - repo_key: Interner Schluessel wie `local::...` oder `remote::123`.
+
+        Rueckgabewerte:
+        - Persistierter Zustand oder `None`, wenn kein passender Eintrag existiert.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Der Lookup ist fuer Snapshot- und Evolutionsdienste wichtig, weil sie nicht immer
+          nur ueber Pfad oder GitHub-ID aufgeloest werden koennen.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            row = connection.execute(
+                """
+                SELECT repositories.*, repo_status.*
+                FROM repositories
+                LEFT JOIN repo_status ON repo_status.repo_id = repositories.id
+                WHERE repositories.repo_key = ?
+                LIMIT 1
+                """,
+                (repo_key,),
+            ).fetchone()
+        return self._map_repository(row) if row else None
+
     def fetch_repositories_by_root_path(self, root_path: str) -> list[RepositoryState]:
         """
         Liest alle bekannten lokalen Repository-Zustaende unterhalb eines Wurzelpfads.
@@ -383,6 +449,67 @@ class StateRepository:
             ).fetchall()
         return [self._map_repository(row) for row in rows]
 
+    def fetch_local_repositories(self) -> list[RepositoryState]:
+        """
+        Liest alle aktuell sichtbaren lokalen Repository-Zustaende aus dem State-Store.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Liste aller nicht geloeschten lokalen oder gepaarten Repository-Zustaende.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Die Methode dient Pairing, Sync-Analyse und DB-first-Ansichten, ohne dass
+          dafuer erneut Dateisystem-Scans noetig sind.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            rows = connection.execute(
+                """
+                SELECT repositories.*, repo_status.*
+                FROM repositories
+                LEFT JOIN repo_status ON repo_status.repo_id = repositories.id
+                WHERE repositories.source_type IN ('local', 'paired')
+                  AND repositories.is_deleted = 0
+                ORDER BY repositories.name COLLATE NOCASE, repositories.local_path
+                """
+            ).fetchall()
+        return [self._map_repository(row) for row in rows]
+
+    def fetch_all_repositories(self) -> list[RepositoryState]:
+        """
+        Liest alle aktuell aktiven Repository-Zustaende fuer globale Sync-Laeufe aus.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Liste aller nicht geloeschten Repository-Zustaende.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Die Methode wird fuer Orchestrierung und Pairing benoetigt, wenn lokale und
+          entfernte Eintraege gemeinsam betrachtet werden sollen.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            rows = connection.execute(
+                """
+                SELECT repositories.*, repo_status.*
+                FROM repositories
+                LEFT JOIN repo_status ON repo_status.repo_id = repositories.id
+                WHERE repositories.is_deleted = 0
+                ORDER BY repositories.name COLLATE NOCASE, repositories.local_path
+                """
+            ).fetchall()
+        return [self._map_repository(row) for row in rows]
+
     def fetch_remote_repositories(self) -> list[RepositoryState]:
         """
         Liest alle aktuell sichtbaren Remote-Repositories fuer die DB-first-UI aus.
@@ -413,6 +540,183 @@ class StateRepository:
                 """
             ).fetchall()
         return [self._map_repository(row) for row in rows]
+
+    def upsert_repo_link(self, repo_link: RepoLink) -> RepoLink:
+        """
+        Legt eine Repository-Verknuepfung an oder aktualisiert sie minimal-invasiv.
+
+        Eingabeparameter:
+        - repo_link: Vollstaendig vorbereiteter Link zwischen lokalem und entferntem Repository.
+
+        Rueckgabewerte:
+        - Persistierter RepoLink inklusive Datenbank-ID.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler bei Insert oder Update.
+
+        Wichtige interne Logik:
+        - Bereits bestehende Links fuer denselben State-Eintrag und dieselbe Remote-ID
+          werden wiederverwendet, damit manuelle oder bestaetigte Kopplungen stabil bleiben.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            existing = connection.execute(
+                """
+                SELECT id
+                FROM repo_links
+                WHERE state_repo_id = ?
+                  AND (
+                      github_repo_id = ?
+                      OR (? <> '' AND remote_url = ?)
+                  )
+                ORDER BY is_active DESC, id DESC
+                LIMIT 1
+                """,
+                (
+                    repo_link.state_repo_id,
+                    repo_link.github_repo_id,
+                    repo_link.remote_url,
+                    repo_link.remote_url,
+                ),
+            ).fetchone()
+            payload = (
+                repo_link.state_repo_id,
+                repo_link.github_repo_id,
+                repo_link.local_path,
+                repo_link.remote_url,
+                repo_link.remote_owner,
+                repo_link.remote_name,
+                repo_link.link_type,
+                repo_link.link_confidence,
+                int(repo_link.is_active),
+                repo_link.last_verified_at,
+            )
+            if existing is None:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO repo_links (
+                        state_repo_id,
+                        github_repo_id,
+                        local_path,
+                        remote_url,
+                        remote_owner,
+                        remote_name,
+                        link_type,
+                        link_confidence,
+                        is_active,
+                        last_verified_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    payload,
+                )
+                repo_link.id = int(cursor.lastrowid)
+            else:
+                repo_link.id = int(existing["id"])
+                connection.execute(
+                    """
+                    UPDATE repo_links
+                    SET state_repo_id = ?,
+                        github_repo_id = ?,
+                        local_path = ?,
+                        remote_url = ?,
+                        remote_owner = ?,
+                        remote_name = ?,
+                        link_type = ?,
+                        link_confidence = ?,
+                        is_active = ?,
+                        last_verified_at = ?
+                    WHERE id = ?
+                    """,
+                    (*payload, repo_link.id),
+                )
+        return repo_link
+
+    def deactivate_repo_links_for_state_repo(self, state_repo_id: int) -> None:
+        """
+        Markiert alle bisherigen aktiven Links eines Repositorys als inaktiv.
+
+        Eingabeparameter:
+        - state_repo_id: Lokale Repository-ID, deren bisherige Links deaktiviert werden sollen.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler beim Update.
+
+        Wichtige interne Logik:
+        - Die Methode erlaubt dem Pairing-Service, unsichere oder veraltete Zuordnungen
+          sauber abzulosen, ohne historische Link-Daten hart zu loeschen.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            connection.execute(
+                "UPDATE repo_links SET is_active = 0 WHERE state_repo_id = ?",
+                (state_repo_id,),
+            )
+
+    def fetch_active_repo_link_for_state_repo_id(self, state_repo_id: int) -> RepoLink | None:
+        """
+        Liest den aktuell aktiven Link fuer ein lokales Repository aus.
+
+        Eingabeparameter:
+        - state_repo_id: Lokale Repository-ID aus der State-Datenbank.
+
+        Rueckgabewerte:
+        - Aktiver RepoLink oder `None`, wenn keine bestaetigte Kopplung vorliegt.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Der Pairing-Layer kann damit bestaetigte oder manuelle Verknuepfungen priorisieren.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            row = connection.execute(
+                """
+                SELECT id, state_repo_id, github_repo_id, local_path, remote_url,
+                       remote_owner, remote_name, link_type, link_confidence, is_active, last_verified_at
+                FROM repo_links
+                WHERE state_repo_id = ?
+                  AND is_active = 1
+                ORDER BY link_confidence DESC, id DESC
+                LIMIT 1
+                """,
+                (state_repo_id,),
+            ).fetchone()
+        return self._map_repo_link(row) if row else None
+
+    def fetch_active_repo_links(self) -> list[RepoLink]:
+        """
+        Liest alle aktuell aktiven Pairing-Links fuer globale Sync-Analysen aus.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Liste aller aktiven RepoLinks.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Die Methode erlaubt dem Orchestrator, bestaetigte Verknuepfungen in einem
+          Lauf gesammelt auszuwerten.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            rows = connection.execute(
+                """
+                SELECT id, state_repo_id, github_repo_id, local_path, remote_url,
+                       remote_owner, remote_name, link_type, link_confidence, is_active, last_verified_at
+                FROM repo_links
+                WHERE is_active = 1
+                ORDER BY link_confidence DESC, id DESC
+                """
+            ).fetchall()
+        return [self._map_repo_link(row) for row in rows]
 
     def touch_repository_seen(self, repository_id: int, seen_at: str, scan_fingerprint: str) -> RepositoryState | None:
         """
@@ -993,6 +1297,102 @@ class StateRepository:
             for row in rows
         ]
 
+    def fetch_recent_scan_runs(self, scan_type: str | None = None, limit: int = 8) -> list[ScanRunRecord]:
+        """
+        Liest die juengsten Scan-Laeufe fuer Diagnose- und Performance-Ansichten aus.
+
+        Eingabeparameter:
+        - scan_type: Optionaler Filter wie `local_normal_refresh` oder `remote_refresh`.
+        - limit: Maximale Anzahl zurueckzugebender Eintraege.
+
+        Rueckgabewerte:
+        - Liste kompakter ScanRunRecord-Eintraege in absteigender Reihenfolge.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Die Methode ist absichtlich global gehalten, weil die bestehenden Scan-Laeufe
+          noch nicht direkt an einzelne Repositories gebunden sind.
+        """
+
+        query = """
+            SELECT id, scan_type, started_at, finished_at, duration_ms, changed_count, unchanged_count, error_count
+            FROM scan_runs
+        """
+        parameters: list[object] = []
+        if scan_type:
+            query += " WHERE scan_type = ?"
+            parameters.append(scan_type)
+        query += " ORDER BY started_at DESC, id DESC LIMIT ?"
+        parameters.append(limit)
+
+        with sqlite_connection(self._database_file) as connection:
+            rows = connection.execute(query, parameters).fetchall()
+
+        return [
+            ScanRunRecord(
+                id=int(row["id"]),
+                scan_type=str(row["scan_type"] or ""),
+                started_at=str(row["started_at"] or ""),
+                finished_at=str(row["finished_at"] or ""),
+                duration_ms=int(row["duration_ms"] or 0),
+                changed_count=int(row["changed_count"] or 0),
+                unchanged_count=int(row["unchanged_count"] or 0),
+                error_count=int(row["error_count"] or 0),
+            )
+            for row in rows
+        ]
+
+    def fetch_repo_files(self, repo_id: int, include_deleted: bool = False) -> list[RepoFileState]:
+        """
+        Liest den bekannten Dateiindex eines Repositories aus dem State-Layer.
+
+        Eingabeparameter:
+        - repo_id: Zugehoerige Repository-ID.
+        - include_deleted: Schaltet weich geloeschte Dateieintraege bei Bedarf mit ein.
+
+        Rueckgabewerte:
+        - Liste persistierter RepoFileState-Eintraege.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler beim Lesen.
+
+        Wichtige interne Logik:
+        - Die Methode dient Snapshot- und RepoViewer-Diensten als DB-first-Dateiquelle,
+          ohne erneut das Dateisystem scannen zu muessen.
+        """
+
+        with sqlite_connection(self._database_file) as connection:
+            rows = connection.execute(
+                """
+                SELECT repo_id, relative_path, path_type, size_bytes, modified_at, content_hash,
+                       is_tracked, is_ignored, is_deleted, last_seen_at, last_seen_scan_at
+                FROM repo_files
+                WHERE repo_id = ?
+                  AND (? = 1 OR is_deleted = 0)
+                ORDER BY relative_path
+                """,
+                (repo_id, int(include_deleted)),
+            ).fetchall()
+
+        return [
+            RepoFileState(
+                repo_id=int(row["repo_id"]),
+                relative_path=str(row["relative_path"] or ""),
+                path_type=str(row["path_type"] or "file"),
+                size_bytes=int(row["size_bytes"] or 0),
+                modified_at=str(row["modified_at"] or ""),
+                content_hash=str(row["content_hash"] or ""),
+                is_tracked=bool(row["is_tracked"]),
+                is_ignored=bool(row["is_ignored"]),
+                is_deleted=bool(row["is_deleted"]),
+                last_seen_at=str(row["last_seen_at"] or ""),
+                last_seen_scan_at=str(row["last_seen_scan_at"] or ""),
+            )
+            for row in rows
+        ]
+
     def _build_repo_key(self, repository: RepositoryState) -> str:
         """
         Erzeugt einen stabilen internen Schluessel fuer lokale, Remote- oder gemischte Repositories.
@@ -1092,4 +1492,49 @@ class StateRepository:
             status=str(row["status"] or "NOT_INITIALIZED"),
             last_local_scan_at=str(row["last_local_scan_at"] or ""),
             last_remote_check_at=str(row["last_remote_check_at"] or ""),
+            linked_repo_key=str(row["linked_repo_key"] or "") if "linked_repo_key" in row_keys else "",
+            linked_local_path=str(row["linked_local_path"] or "") if "linked_local_path" in row_keys else "",
+            link_type=str(row["link_type"] or "") if "link_type" in row_keys else "",
+            link_confidence=int(row["link_confidence"] or 0) if "link_confidence" in row_keys else 0,
+            local_head_commit=str(row["local_head_commit"] or row["head_commit"] or "")
+            if "local_head_commit" in row_keys
+            else str(row["head_commit"] or ""),
+            remote_head_commit=str(row["remote_head_commit"] or "") if "remote_head_commit" in row_keys else "",
+            merge_base_commit=str(row["merge_base_commit"] or "") if "merge_base_commit" in row_keys else "",
+            last_sync_decision=str(row["last_sync_decision"] or "") if "last_sync_decision" in row_keys else "",
+            sync_policy=str(row["sync_policy"] or "manual") if "sync_policy" in row_keys else "manual",
+            recommended_action=str(row["recommended_action"] or "-"),
+            available_actions_json=str(row["available_actions_json"] or "[]"),
+        )
+
+    def _map_repo_link(self, row) -> RepoLink:
+        """
+        Wandelt eine SQLite-Zeile aus `repo_links` in das dazugehoerige Modell um.
+
+        Eingabeparameter:
+        - row: Einzelne SQLite-Zeile aus einer Link-Abfrage.
+
+        Rueckgabewerte:
+        - Vollstaendig aufgebauter RepoLink.
+
+        Moegliche Fehlerfaelle:
+        - Keine; fehlende Werte werden defensiv mit Standardwerten ersetzt.
+
+        Wichtige interne Logik:
+        - Die schmale Mapping-Methode verhindert, dass Pairing-Services direkt mit
+          rohen SQLite-Zeilen arbeiten muessen.
+        """
+
+        return RepoLink(
+            id=int(row["id"]) if row["id"] is not None else None,
+            state_repo_id=int(row["state_repo_id"] or 0),
+            github_repo_id=int(row["github_repo_id"] or 0),
+            local_path=str(row["local_path"] or ""),
+            remote_url=str(row["remote_url"] or ""),
+            remote_owner=str(row["remote_owner"] or ""),
+            remote_name=str(row["remote_name"] or ""),
+            link_type=str(row["link_type"] or ""),
+            link_confidence=int(row["link_confidence"] or 0),
+            is_active=bool(row["is_active"]) if row["is_active"] is not None else True,
+            last_verified_at=str(row["last_verified_at"] or ""),
         )

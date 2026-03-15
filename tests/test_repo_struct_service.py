@@ -30,6 +30,13 @@ class DummyRepoStructRepository:
 
         return True, 7, "2026-03-12T12:00:00"
 
+    def fetch_repo_items(self, repo_identifier: str, source_type: str, include_deleted: bool = False) -> list:
+        """
+        Liefert eine leere Strukturliste fuer RepoViewer-nahe Tests.
+        """
+
+        return []
+
 
 def test_repo_struct_service_scans_and_persists_items(tmp_path: Path) -> None:
     """
@@ -59,5 +66,5 @@ def test_repo_struct_service_scans_and_persists_items(tmp_path: Path) -> None:
     results = service.scan_repositories([local_repo], job_id="job-3")
 
     assert results[0].status == "success"
-    assert repository.calls[0][0] == "demo_repo"
+    assert repository.calls[0][0] == f"local::{str(repo_root).lower()}"
     assert repository.calls[0][3] >= 2

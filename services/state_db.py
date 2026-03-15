@@ -49,7 +49,18 @@ CREATE TABLE IF NOT EXISTS repositories (
     remote_visibility TEXT,
     status TEXT,
     last_local_scan_at TEXT,
-    last_remote_check_at TEXT
+    last_remote_check_at TEXT,
+    linked_repo_key TEXT,
+    linked_local_path TEXT,
+    link_type TEXT,
+    link_confidence INTEGER DEFAULT 0,
+    local_head_commit TEXT,
+    remote_head_commit TEXT,
+    merge_base_commit TEXT,
+    last_sync_decision TEXT,
+    sync_policy TEXT DEFAULT 'manual',
+    recommended_action TEXT DEFAULT '-',
+    available_actions_json TEXT DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS repo_status (
@@ -109,6 +120,21 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     unchanged_count INTEGER DEFAULT 0,
     error_count INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS repo_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    state_repo_id INTEGER NOT NULL,
+    github_repo_id INTEGER DEFAULT 0,
+    local_path TEXT,
+    remote_url TEXT,
+    remote_owner TEXT,
+    remote_name TEXT,
+    link_type TEXT NOT NULL,
+    link_confidence INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    last_verified_at TEXT,
+    FOREIGN KEY(state_repo_id) REFERENCES repositories(id)
+);
 """
 
 STATE_INDEXES = """
@@ -117,6 +143,7 @@ CREATE INDEX IF NOT EXISTS idx_repositories_remote_url ON repositories(remote_ur
 CREATE INDEX IF NOT EXISTS idx_repositories_repo_key ON repositories(repo_key);
 CREATE INDEX IF NOT EXISTS idx_repositories_github_repo_id ON repositories(github_repo_id);
 CREATE INDEX IF NOT EXISTS idx_repositories_last_checked_at ON repositories(last_checked_at);
+CREATE INDEX IF NOT EXISTS idx_repositories_linked_repo_key ON repositories(linked_repo_key);
 CREATE INDEX IF NOT EXISTS idx_repo_status_repo_id ON repo_status(repo_id);
 CREATE INDEX IF NOT EXISTS idx_repo_status_needs_rescan ON repo_status(needs_rescan);
 CREATE INDEX IF NOT EXISTS idx_repo_files_repo_id ON repo_files(repo_id);
@@ -124,6 +151,9 @@ CREATE INDEX IF NOT EXISTS idx_repo_files_repo_id_relative_path ON repo_files(re
 CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_files_unique_repo_path ON repo_files(repo_id, relative_path);
 CREATE INDEX IF NOT EXISTS idx_repo_status_events_repo_id ON repo_status_events(repo_id);
 CREATE INDEX IF NOT EXISTS idx_scan_runs_scan_type ON scan_runs(scan_type);
+CREATE INDEX IF NOT EXISTS idx_repo_links_state_repo_id ON repo_links(state_repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_links_github_repo_id ON repo_links(github_repo_id);
+CREATE INDEX IF NOT EXISTS idx_repo_links_remote_url ON repo_links(remote_url);
 """
 
 
@@ -187,6 +217,17 @@ def initialize_state_database(database_file: Path) -> None:
             ("status", "TEXT"),
             ("last_local_scan_at", "TEXT"),
             ("last_remote_check_at", "TEXT"),
+            ("linked_repo_key", "TEXT"),
+            ("linked_local_path", "TEXT"),
+            ("link_type", "TEXT"),
+            ("link_confidence", "INTEGER DEFAULT 0"),
+            ("local_head_commit", "TEXT"),
+            ("remote_head_commit", "TEXT"),
+            ("merge_base_commit", "TEXT"),
+            ("last_sync_decision", "TEXT"),
+            ("sync_policy", "TEXT DEFAULT 'manual'"),
+            ("recommended_action", "TEXT DEFAULT '-'"),
+            ("available_actions_json", "TEXT DEFAULT '[]'"),
         ):
             _ensure_column(connection, "repositories", column_name, definition)
 
@@ -204,6 +245,18 @@ def initialize_state_database(database_file: Path) -> None:
             ("payload_json", "TEXT"),
         ):
             _ensure_column(connection, "repo_status_events", column_name, definition)
+
+        for column_name, definition in (
+            ("github_repo_id", "INTEGER DEFAULT 0"),
+            ("local_path", "TEXT"),
+            ("remote_url", "TEXT"),
+            ("remote_owner", "TEXT"),
+            ("remote_name", "TEXT"),
+            ("link_confidence", "INTEGER DEFAULT 0"),
+            ("is_active", "INTEGER DEFAULT 1"),
+            ("last_verified_at", "TEXT"),
+        ):
+            _ensure_column(connection, "repo_links", column_name, definition)
 
         connection.executescript(STATE_INDEXES)
 

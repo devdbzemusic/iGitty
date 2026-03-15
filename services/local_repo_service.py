@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from core.logger import AppLogger
@@ -276,13 +277,29 @@ class LocalRepoService:
             needs_rescan=repository.needs_rescan,
             health_state=repository.health_state,
             sync_state=repository.sync_state,
+            owner=repository.remote_owner,
+            remote_name=repository.remote_repo_name,
+            ahead_count=repository.ahead_count,
+            behind_count=repository.behind_count,
+            last_checked_at=repository.last_checked_at,
+            link_type=repository.link_type,
+            link_confidence=repository.link_confidence,
+            sync_policy=repository.sync_policy,
+            local_head_commit=repository.local_head_commit or repository.head_commit,
+            remote_head_commit=repository.remote_head_commit,
+            merge_base_commit=repository.merge_base_commit,
             state_status_hash=repository.status_hash,
         )
-        mapped_repo.recommended_action = self._repo_action_resolver.resolve_local_primary_action(mapped_repo)
-        mapped_repo.available_actions = [
-            action.action_id
-            for action in self._repo_action_resolver.resolve_local_actions(mapped_repo)
-        ]
+        mapped_repo.recommended_action = repository.recommended_action or self._repo_action_resolver.resolve_local_primary_action(mapped_repo)
+        try:
+            mapped_repo.available_actions = [str(action_id) for action_id in json.loads(repository.available_actions_json or "[]")]
+        except json.JSONDecodeError:
+            mapped_repo.available_actions = []
+        if not mapped_repo.available_actions:
+            mapped_repo.available_actions = [
+                action.action_id
+                for action in self._repo_action_resolver.resolve_local_actions(mapped_repo)
+            ]
         if self._logger is not None:
             self._logger.event(
                 "scan",

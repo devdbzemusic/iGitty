@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 from core.logger import AppLogger
 from db.state_repository import StateRepository
 from models.state_models import RepoStatusEvent, RepositoryState
 from services.git_inspector_service import GitInspectorService
+from services.repo_action_resolver import RepoActionResolver
 from services.repo_fingerprint_service import RepoFingerprintService
+from services.repository_snapshot_service import RepositorySnapshotService
+from services.repository_structure_scanner import RepositoryStructureScanner
 from services.remote_validation_service import RemoteValidationService
 from services.repo_structure_service import RepoStructureService
 from services.state_db import compute_repository_status
@@ -25,6 +29,9 @@ class RepoIndexService:
         repo_fingerprint_service: RepoFingerprintService | None = None,
         remote_validation_service: RemoteValidationService | None = None,
         repo_structure_service: RepoStructureService | None = None,
+        repository_structure_scanner: RepositoryStructureScanner | None = None,
+        repo_action_resolver: RepoActionResolver | None = None,
+        repository_snapshot_service: RepositorySnapshotService | None = None,
         logger: AppLogger | None = None,
     ) -> None:
         """
@@ -51,6 +58,9 @@ class RepoIndexService:
         self._repo_fingerprint_service = repo_fingerprint_service or RepoFingerprintService()
         self._remote_validation_service = remote_validation_service
         self._repo_structure_service = repo_structure_service
+        self._repository_structure_scanner = repository_structure_scanner
+        self._repo_action_resolver = repo_action_resolver or RepoActionResolver()
+        self._repository_snapshot_service = repository_snapshot_service
         self._logger = logger
 
     def scan_root(self, root_path: Path, hard_refresh: bool = False) -> list[RepositoryState]:
@@ -186,6 +196,7 @@ class RepoIndexService:
                         created_at=self._utc_now(),
                     )
                 )
+                self._run_structure_vault_scan(repository)
             elif self._repo_structure_service is not None and repository.id is not None and self._logger is not None:
                 self._logger.event(
                     "scan",
@@ -194,8 +205,15 @@ class RepoIndexService:
                 )
 
             repository.needs_rescan = False
+            self._apply_resolved_actions(repository)
             repository.status_hash = self._repo_fingerprint_service.build_repository_status_hash(repository)
             repository = self._state_repository.upsert_repository(repository)
+            if self._repository_snapshot_service is not None:
+                self._repository_snapshot_service.capture_snapshot_for_repository(
+                    repository,
+                    trigger_type="local_scan",
+                    force=False,
+                )
             indexed_repositories.append(repository)
             changed_count += 1
             dir_names[:] = []
@@ -317,6 +335,7 @@ class RepoIndexService:
                     created_at=self._utc_now(),
                 )
             )
+            self._run_structure_vault_scan(repository)
         elif self._repo_structure_service is not None and repository.id is not None and self._logger is not None:
             self._logger.event(
                 "scan",
@@ -325,8 +344,15 @@ class RepoIndexService:
             )
 
         repository.needs_rescan = False
+        self._apply_resolved_actions(repository)
         repository.status_hash = self._repo_fingerprint_service.build_repository_status_hash(repository)
         repository = self._state_repository.upsert_repository(repository)
+        if self._repository_snapshot_service is not None:
+            self._repository_snapshot_service.capture_snapshot_for_repository(
+                repository,
+                trigger_type="local_scan",
+                force=False,
+            )
         if self._logger is not None:
             self._logger.event(
                 "scan",
@@ -334,6 +360,82 @@ class RepoIndexService:
                 f"repo_path={repo_path} | status={repository.status}",
             )
         return repository
+
+    def _run_structure_vault_scan(self, repository: RepositoryState) -> None:
+        """
+        Aktualisiert zusaetzlich den baumartigen Struktur-Vault fuer den RepoExplorer.
+
+        Eingabeparameter:
+        - repository: Bereits persistierter lokaler RepositoryState.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Strukturfehler werden nur protokolliert und blockieren den eigentlichen State-Scan nicht.
+
+        Wichtige interne Logik:
+        - Der Struktur-Vault ist eine Zusatzsicht fuer RepoViewer und Diagnose; ein Fehler dort
+          darf deshalb den allgemeinen Refresh nicht unbrauchbar machen.
+        """
+
+        if self._repository_structure_scanner is None or repository.id is None or not repository.local_path:
+            return
+        try:
+            stats = self._repository_structure_scanner.scan_repository(
+                repo_identifier=repository.repo_key or f"local::{repository.local_path.lower()}",
+                source_type="local",
+                repo_path=Path(repository.local_path),
+                include_commit_details=False,
+            )
+            self._state_repository.add_status_event(
+                RepoStatusEvent(
+                    repo_id=int(repository.id),
+                    event_type="STRUCT_SCAN_DONE",
+                    message=(
+                        f"Struktur aktualisiert: {stats.total_count} Knoten "
+                        f"(+{stats.inserted_count} / ~{stats.updated_count} / -{stats.deleted_count})."
+                    ),
+                    created_at=self._utc_now(),
+                )
+            )
+        except Exception as error:  # noqa: BLE001
+            if self._logger is not None:
+                self._logger.exception(f"Struktur-Vault-Scan fehlgeschlagen fuer '{repository.local_path}': {error}")
+            self._state_repository.add_status_event(
+                RepoStatusEvent(
+                    repo_id=int(repository.id),
+                    event_type="STRUCT_SCAN_FAILED",
+                    severity="error",
+                    message=str(error),
+                    created_at=self._utc_now(),
+                )
+            )
+
+    def _apply_resolved_actions(self, repository: RepositoryState) -> None:
+        """
+        Uebernimmt empfohlene und verfuegbare Aktionen in den persistierten RepositoryState.
+
+        Eingabeparameter:
+        - repository: Bereits fachlich aufgebauter RepositoryState.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine; die Ableitung bleibt rein im Speicher.
+
+        Wichtige interne Logik:
+        - Die persistierten Aktionsfelder ermoeglichen DB-first-Dashboards und spaetere
+          Automatisierung, ohne bei jeder Anzeige erneut Regeln auswerten zu muessen.
+        """
+
+        resolved_actions = self._repo_action_resolver.resolve_repo_actions(repository)
+        repository.recommended_action = self._repo_action_resolver.resolve_repo_primary_action(repository)
+        repository.available_actions_json = json.dumps(
+            [action.action_id for action in resolved_actions],
+            ensure_ascii=True,
+        )
 
     def fetch_cached_root(self, root_path: Path) -> list[RepositoryState]:
         """

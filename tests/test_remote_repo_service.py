@@ -95,7 +95,8 @@ def test_remote_repo_service_loads_cached_repositories_from_state_db(tmp_path: P
     assert len(cached_repositories) == 1
     assert cached_repositories[0].full_name == "dbzs/demo"
     assert cached_repositories[0].topics == ["tooling", "python"]
-    assert cached_repositories[0].available_actions == ["set_private"]
+    assert "set_private" in cached_repositories[0].available_actions
+    assert "clone" in cached_repositories[0].available_actions
 
 
 def test_remote_repo_service_marks_missing_remote_repositories_and_removes_them_from_cache(tmp_path: Path) -> None:

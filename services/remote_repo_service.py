@@ -9,10 +9,11 @@ from time import perf_counter
 from core.logger import AppLogger
 from db.state_repository import StateRepository
 from models.repo_models import RateLimitInfo, RemoteRepo
-from models.state_models import RepositoryState
+from models.state_models import RepoStatusEvent, RepositoryState
 from services.github_service import GitHubService
 from services.repo_action_resolver import RepoActionResolver
 from services.repo_fingerprint_service import RepoFingerprintService
+from services.repository_snapshot_service import RepositorySnapshotService
 
 
 class RemoteRepoService:
@@ -25,6 +26,7 @@ class RemoteRepoService:
         logger: AppLogger | None = None,
         repo_action_resolver: RepoActionResolver | None = None,
         repo_fingerprint_service: RepoFingerprintService | None = None,
+        repository_snapshot_service: RepositorySnapshotService | None = None,
     ) -> None:
         """
         Initialisiert den Service mit GitHub-, State- und Resolver-Abhaengigkeiten.
@@ -52,6 +54,7 @@ class RemoteRepoService:
         self._logger = logger
         self._repo_action_resolver = repo_action_resolver or RepoActionResolver()
         self._repo_fingerprint_service = repo_fingerprint_service or RepoFingerprintService()
+        self._repository_snapshot_service = repository_snapshot_service
 
     def load_cached_repositories(self) -> list[RemoteRepo]:
         """
@@ -119,17 +122,42 @@ class RemoteRepoService:
                 previous_state = previous_states.get(repository.repo_id)
                 if self._is_remote_repository_unchanged(previous_state, repository_state):
                     if previous_state is not None and previous_state.id is not None:
-                        self._state_repository.touch_remote_repository_seen(
+                        touched_repository = self._state_repository.touch_remote_repository_seen(
                             previous_state.id,
                             started_at,
                             repository_state.scan_fingerprint,
                         )
+                        if touched_repository is not None:
+                            self._state_repository.add_status_event(
+                                RepoStatusEvent(
+                                    repo_id=int(touched_repository.id or 0),
+                                    event_type="REMOTE_SYNC_SKIPPED_UNCHANGED",
+                                    severity="debug",
+                                    message=f"Remote '{touched_repository.name}' unveraendert.",
+                                    created_at=started_at,
+                                )
+                            )
                     unchanged_count += 1
                     continue
-                self._state_repository.upsert_repository(repository_state)
+                stored_repository = self._state_repository.upsert_repository(repository_state)
+                self._state_repository.add_status_event(
+                    RepoStatusEvent(
+                        repo_id=int(stored_repository.id or 0),
+                        event_type="REMOTE_SYNC_COMPLETED",
+                        message=f"Remote '{stored_repository.name}' mit GitHub synchronisiert.",
+                        created_at=started_at,
+                    )
+                )
+                if self._repository_snapshot_service is not None:
+                    self._repository_snapshot_service.capture_snapshot_for_repository(
+                        stored_repository,
+                        trigger_type="remote_sync",
+                        force=False,
+                    )
                 changed_count += 1
 
-            changed_count += self._state_repository.mark_missing_remote_repositories(seen_repo_ids, started_at)
+            missing_count = self._state_repository.mark_missing_remote_repositories(seen_repo_ids, started_at)
+            changed_count += missing_count
             finished_at = self._utc_now()
             duration_ms = int((perf_counter() - started_at_perf) * 1000)
             self._state_repository.complete_scan_run(
@@ -147,7 +175,7 @@ class RemoteRepoService:
                     "remote_sync_complete",
                     (
                         f"loaded={len(repositories)} | changed={changed_count} | "
-                        f"unchanged={unchanged_count} | cached={len(cached_repositories)}"
+                        f"unchanged={unchanged_count} | missing={missing_count} | cached={len(cached_repositories)}"
                     ),
                     level=20,
                 )
@@ -186,6 +214,12 @@ class RemoteRepoService:
 
         state = self._map_remote_repo_to_state(repository, self._utc_now())
         stored_state = self._state_repository.upsert_repository(state)
+        if self._repository_snapshot_service is not None:
+            self._repository_snapshot_service.capture_snapshot_for_repository(
+                stored_state,
+                trigger_type="remote_update",
+                force=True,
+            )
         return self._map_state_to_remote_repo(stored_state)
 
     def _map_remote_repo_to_state(self, repository: RemoteRepo, scan_timestamp: str) -> RepositoryState:
@@ -263,6 +297,12 @@ class RemoteRepoService:
             last_remote_check_at=scan_timestamp,
         )
         repository_state.scan_fingerprint = self._repo_fingerprint_service.build_remote_fingerprint(repository)
+        resolved_actions = self._repo_action_resolver.resolve_repo_actions(repository_state)
+        repository_state.recommended_action = self._repo_action_resolver.resolve_repo_primary_action(repository_state)
+        repository_state.available_actions_json = json.dumps(
+            [action.action_id for action in resolved_actions],
+            ensure_ascii=True,
+        )
         repository_state.status_hash = self._repo_fingerprint_service.build_repository_status_hash(repository_state)
         return repository_state
 
@@ -314,12 +354,29 @@ class RemoteRepoService:
             updated_at=repository.updated_at,
             pushed_at=repository.pushed_at,
             size=repository.size_kb,
+            recommended_action=repository.recommended_action or "-",
+            sync_state=repository.sync_state,
+            health_state=repository.health_state,
+            linked_local_path=repository.linked_local_path,
+            ahead_count=repository.ahead_count,
+            behind_count=repository.behind_count,
+            last_checked_at=repository.last_checked_at,
+            link_type=repository.link_type,
+            link_confidence=repository.link_confidence,
             state_status_hash=repository.status_hash,
         )
-        mapped_repository.available_actions = [
-            action.action_id
-            for action in self._repo_action_resolver.resolve_remote_actions(mapped_repository)
-        ]
+        try:
+            mapped_repository.available_actions = [
+                str(action_id)
+                for action_id in json.loads(repository.available_actions_json or "[]")
+            ]
+        except json.JSONDecodeError:
+            mapped_repository.available_actions = []
+        if not mapped_repository.available_actions:
+            mapped_repository.available_actions = [
+                action.action_id
+                for action in self._repo_action_resolver.resolve_remote_actions(mapped_repository)
+            ]
         return mapped_repository
 
     def _is_remote_repository_unchanged(

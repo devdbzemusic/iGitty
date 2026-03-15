@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from models.repo_models import LocalRepo, RemoteRepo
+from models.state_models import RepositoryState
 from services.repo_action_resolver import RepoActionResolver
 
 
@@ -85,3 +86,32 @@ def test_repo_action_resolver_returns_visibility_toggle_for_remote_repository() 
 
     assert actions[0].action_id == "set_public"
     assert actions[0].recommended is True
+
+
+def test_repo_action_resolver_derives_state_actions_for_dirty_ahead_repository() -> None:
+    """
+    Prueft, dass der PHASE-II-Resolver aus dem RepositoryState Commit und Push ableitet.
+    """
+
+    resolver = RepoActionResolver()
+    repository = RepositoryState(
+        name="demo",
+        source_type="local",
+        local_path="C:/demo",
+        is_git_repo=True,
+        exists_local=True,
+        has_remote=True,
+        remote_configured=True,
+        git_initialized=True,
+        has_uncommitted_changes=True,
+        ahead_count=2,
+        behind_count=0,
+        sync_state="AHEAD",
+        health_state="healthy",
+        status="REMOTE_OK",
+    )
+
+    actions = resolver.resolve_repo_actions(repository)
+
+    assert {action.action_id for action in actions} >= {"commit", "push"}
+    assert resolver.resolve_repo_primary_action(repository) in {"Commit", "Push"}

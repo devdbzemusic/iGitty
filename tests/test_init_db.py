@@ -60,6 +60,20 @@ def test_initialize_databases_creates_files(tmp_path: Path) -> None:
             row["name"]
             for row in connection.execute("PRAGMA table_info(repo_status)").fetchall()
         }
+    with sqlite_connection(paths.repo_struct_db_file) as connection:
+        repo_tree_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(repo_tree_items)").fetchall()
+        }
+    with sqlite_connection(paths.jobs_db_file) as connection:
+        repo_snapshot_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(repo_snapshots)").fetchall()
+        }
+        jobs_table_names = {
+            row["name"]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
 
     assert {"repositories", "repo_status", "repo_files", "repo_status_events", "scan_runs"} <= table_names
     assert {
@@ -71,8 +85,23 @@ def test_initialize_databases_creates_files(tmp_path: Path) -> None:
         "topics_json",
         "contributors_summary",
         "updated_at",
+        "linked_repo_key",
+        "linked_local_path",
+        "link_type",
+        "link_confidence",
+        "local_head_commit",
+        "remote_head_commit",
+        "merge_base_commit",
+        "last_sync_decision",
+        "sync_policy",
+        "recommended_action",
+        "available_actions_json",
     } <= repository_columns
     assert {"repo_id", "exists_local", "needs_rescan", "sync_state", "health_state"} <= repo_status_columns
+    assert {"is_deleted", "content_hash", "last_seen_at"} <= repo_tree_columns
+    assert {"repo_key", "snapshot_timestamp", "head_commit", "file_count", "structure_hash"} <= repo_snapshot_columns
+    assert {"repo_snapshots", "repo_snapshot_files"} <= jobs_table_names
+    assert "repo_links" in table_names
 
 
 def test_initialize_state_database_migrates_legacy_repositories_before_creating_indexes(tmp_path: Path) -> None:
