@@ -228,6 +228,48 @@ class GitService:
 
         return self._run_git(repo_path, ["status", "--porcelain"], allow_failure=True).splitlines()
 
+    def get_ahead_behind_counts(
+        self,
+        repo_path: Path,
+        branch_name: str,
+        remote_name: str = "origin",
+    ) -> tuple[int, int, bool]:
+        """
+        Liest Ahead-/Behind-Werte gegen den vermuteten Upstream des aktuellen Branches aus.
+
+        Eingabeparameter:
+        - repo_path: Lokaler Repository-Pfad.
+        - branch_name: Aktueller lokaler Branch.
+        - remote_name: Name des zu pruefenden Remotes, standardmaessig `origin`.
+
+        Rueckgabewerte:
+        - Tupel aus Ahead-Anzahl, Behind-Anzahl und Diverged-Flag.
+
+        Moegliche Fehlerfaelle:
+        - Fehlender Upstream oder Git-Fehler liefern defensiv `(0, 0, False)`.
+
+        Wichtige interne Logik:
+        - Die Methode wird nur im Tiefenscan genutzt und bleibt daher bewusst fehlertolerant,
+          damit Repositories ohne Upstream die Scan-Pipeline nicht blockieren.
+        """
+
+        if not branch_name or branch_name == "-":
+            return 0, 0, False
+        upstream_ref = f"{remote_name}/{branch_name}"
+        output = self._run_git(
+            repo_path,
+            ["rev-list", "--left-right", "--count", f"{upstream_ref}...HEAD"],
+            allow_failure=True,
+        ).strip()
+        if not output:
+            return 0, 0, False
+        parts = output.split()
+        if len(parts) != 2 or not all(part.isdigit() for part in parts):
+            return 0, 0, False
+        behind_count = int(parts[0])
+        ahead_count = int(parts[1])
+        return ahead_count, behind_count, ahead_count > 0 and behind_count > 0
+
     def list_tracked_files(self, repo_path: Path) -> list[str]:
         """
         Listet alle von Git verfolgten Dateien eines Repositories auf.

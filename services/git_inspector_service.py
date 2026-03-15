@@ -54,11 +54,17 @@ class GitInspectorService:
             self._logger.event("scan", "inspect_repository_begin", f"repo_path={repo_path}")
         self._git_service.ensure_git_available()
         is_git_repo = self._git_service.is_git_repository(repo_path)
+        repo_details = self._git_service.get_repo_details(repo_path) if is_git_repo else {}
         remote_names = self._git_service.get_remote_names(repo_path) if is_git_repo else []
         remote_name = "origin" if "origin" in remote_names else (remote_names[0] if remote_names else "")
         remote_url = self._git_service.get_remote_url(repo_path, remote_name) if remote_name else ""
-        branch_name = self._git_service.get_repo_details(repo_path).get("branch", "") if is_git_repo else ""
+        branch_name = repo_details.get("branch", "") if is_git_repo else ""
         status_lines = self._git_service.get_status_porcelain(repo_path) if is_git_repo else []
+        ahead_count, behind_count, is_diverged = (
+            self._git_service.get_ahead_behind_counts(repo_path, str(branch_name or ""), remote_name or "origin")
+            if is_git_repo and remote_url and branch_name
+            else (0, 0, False)
+        )
         remote_host, remote_owner, remote_repo_name = self._parse_remote_details(remote_url)
 
         result = {
@@ -75,6 +81,9 @@ class GitInspectorService:
             "remote_owner": remote_owner,
             "remote_repo_name": remote_repo_name,
             "has_uncommitted_changes": bool(status_lines),
+            "ahead_count": ahead_count,
+            "behind_count": behind_count,
+            "is_diverged": is_diverged,
         }
         if self._logger is not None:
             self._logger.event(

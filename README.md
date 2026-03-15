@@ -27,9 +27,31 @@ Der neue State-Layer speichert den lokalen Scan-Zustand getrennt von Job-Log und
 
 `igitty_state.db` enthaelt aktuell:
 
-- `repositories`: lokaler Repository-Zustand inklusive Branch, HEAD, Remote-Metadaten und Status
-- `repo_files`: einfacher Dateiindex pro Repository
+- `repositories`: Repository-Stammdaten plus Fingerprints, Soft-Delete-/Missing-Marker und letzte Sichtung
+- `repo_status`: volatile Zustandsdaten wie Sync-State, Dirty-Hint, Ahead/Behind und `needs_rescan`
+- `repo_files`: deltafaehiger Dateiindex pro Repository mit `is_deleted`-Markern statt Vollersetzung
 - `repo_status_events`: technische Zustandsereignisse wie lokale Scans oder Remote-Validierungen
+- `scan_runs`: Statistik fuer Normal- und Hard-Refresh-Laeufe
+
+## Delta-Refresh
+
+STUFE 1 fuehrt jetzt eine robuste Delta-Basis fuer lokale State-Scans ein:
+
+- bekannte Repositories behalten einen leichten Fingerprint aus `.git`-Markerdateien
+- bei unveraendertem Fingerprint wird kein Tiefenscan ausgefuehrt
+- nur geaenderte oder als `needs_rescan` markierte Repositories laufen durch Git-Inspektion und Dateiindexierung
+- verschwundene Repositories werden per Missing-/Soft-Delete-Marker erhalten statt hart geloescht
+- `scan_runs` unterscheiden Normal Refresh und Hard Refresh im Backend
+
+## DB-First-Start
+
+STUFE 2 nutzt die lokale State-DB jetzt aktiv fuer die Tabellenanzeige:
+
+- beim App-Start werden bekannte lokale Repositories sofort aus SQLite geladen
+- danach startet ein Hintergrund-Refresh ueber den bestehenden Worker-Pfad
+- nach dem Refresh liest die UI den aktuellen Zustand erneut aus SQLite
+- nur geaenderte oder entfernte lokale Zeilen werden gezielt aktualisiert
+- die empfohlene Aktion und die lokalen Kontextaktionen kommen aus einem zentralen Action-Resolver
 
 ## Lokale Tabelle
 

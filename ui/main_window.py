@@ -270,34 +270,13 @@ class MainWindow(QMainWindow):
         - Die Darstellung konzentriert sich auf die fuer den MVP wichtigsten Statuswerte.
         """
 
-        self._local_repositories = repositories
-        rows = [
-            [
-                "",
-                repo.name,
-                "",
-                repo.current_branch,
-                "Ja" if repo.has_remote else "Nein",
-                repo.remote_status,
-                self._format_online_state(repo.remote_exists_online),
-                repo.recommended_action,
-                f"Ja ({repo.modified_count}+{repo.untracked_count})" if repo.has_changes else "Nein",
-                f"{repo.last_commit_hash} {repo.last_commit_date}",
-            ]
-            for repo in repositories
-        ]
+        self._local_repositories = list(repositories)
+        rows = [self._build_local_row_values(repo) for repo in repositories]
         self._local_table.populate_rows(rows)
         for row_index, repo in enumerate(repositories):
-            name_item = self._build_local_name_item(repo)
-            self._local_table.set_item(row_index, 1, name_item)
-            self._local_table.set_cell_widget(row_index, 2, self._build_public_checkbox(repo))
-            if repo.remote_status == "REMOTE_MISSING":
-                self._local_table.set_row_background(row_index, "#5c1f24")
-        has_local = bool(repositories)
-        self._commit_button.setEnabled(has_local)
-        self._push_button.setEnabled(has_local)
-        self._struct_scan_button.setEnabled(has_local)
-        if not repositories:
+            self._render_local_row(row_index, repo)
+        self._update_local_action_buttons()
+        if not self._local_repositories:
             self._diagnostics_window.set_local_repo_diagnostics([])
             self._diagnostics_window.set_local_repo_history([])
 
@@ -632,15 +611,50 @@ class MainWindow(QMainWindow):
           Statusspalten zusammen aktualisiert werden.
         """
 
-        repositories = list(self._local_repositories)
-        for index, current_repository in enumerate(repositories):
+        previous_index = None
+        for index, current_repository in enumerate(self._local_repositories):
             if current_repository.full_path == repository.full_path:
-                repositories[index] = repository
+                previous_index = index
                 break
-        else:
-            repositories.append(repository)
-        repositories.sort(key=lambda item: item.name.lower())
-        self.populate_local_repositories(repositories)
+
+        if previous_index is not None:
+            del self._local_repositories[previous_index]
+            self._local_table.remove_row(previous_index)
+
+        insertion_index = self._find_local_insert_index(repository)
+        self._local_repositories.insert(insertion_index, repository)
+        self._local_table.insert_row(insertion_index, self._build_local_row_values(repository))
+        self._render_local_row(insertion_index, repository)
+        self._update_local_action_buttons()
+
+    def remove_local_repository(self, local_path: str) -> None:
+        """
+        Entfernt genau einen lokalen Repository-Eintrag gezielt aus Tabelle und In-Memory-Liste.
+
+        Eingabeparameter:
+        - local_path: Vollstaendiger Pfad des zu entfernenden Repositories.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Unbekannte Pfade werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Methode wird fuer partielle UI-Aktualisierungen in STUFE 2 benoetigt,
+          damit kein kompletter Tabellen-Rebuild fuer entfernte Eintraege noetig ist.
+        """
+
+        for index, repository in enumerate(self._local_repositories):
+            if repository.full_path != local_path:
+                continue
+            del self._local_repositories[index]
+            self._local_table.remove_row(index)
+            self._update_local_action_buttons()
+            if not self._local_repositories:
+                self._diagnostics_window.set_local_repo_diagnostics([])
+                self._diagnostics_window.set_local_repo_history([])
+            return
 
     def upsert_remote_repository(self, repository: RemoteRepo) -> None:
         """
@@ -890,6 +904,110 @@ class MainWindow(QMainWindow):
             return "Nein"
         return "Unbekannt"
 
+    def _build_local_row_values(self, repository: LocalRepo) -> list[str]:
+        """
+        Erzeugt die Standard-Textwerte einer lokalen Tabellenzeile.
+
+        Eingabeparameter:
+        - repository: Lokales Repository fuer die darzustellende Zeile.
+
+        Rueckgabewerte:
+        - Liste der Standardzellwerte fuer das Tabellenwidget.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die zentrale Zeilenabbildung haelt Vollaufbau und partielle Updates konsistent.
+        """
+
+        return [
+            "",
+            repository.name,
+            "",
+            repository.current_branch,
+            "Ja" if repository.has_remote else "Nein",
+            repository.remote_status,
+            self._format_online_state(repository.remote_exists_online),
+            repository.recommended_action,
+            f"Ja ({repository.modified_count}+{repository.untracked_count})" if repository.has_changes else "Nein",
+            f"{repository.last_commit_hash} {repository.last_commit_date}",
+        ]
+
+    def _render_local_row(self, row_index: int, repository: LocalRepo) -> None:
+        """
+        Vervollstaendigt Spezialzellen und Statusfarben einer lokalen Tabellenzeile.
+
+        Eingabeparameter:
+        - row_index: Zielzeile innerhalb der lokalen Tabelle.
+        - repository: Fachmodell fuer die aktuelle Zeile.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine; ungültige Zeilen werden von Qt defensiv behandelt.
+
+        Wichtige interne Logik:
+        - Name-Tooltip, Public-Checkbox und Statusmarkierungen werden getrennt von den
+          Standardtextzellen gepflegt, damit partielle Zeilenupdates einfach bleiben.
+        """
+
+        self._local_table.set_item(row_index, 1, self._build_local_name_item(repository))
+        self._local_table.set_cell_widget(row_index, 2, self._build_public_checkbox(repository))
+        self._local_table.clear_row_background(row_index)
+        if not repository.exists_local:
+            self._local_table.set_row_background(row_index, "#3a3a3a")
+        elif repository.remote_status == "REMOTE_MISSING":
+            self._local_table.set_row_background(row_index, "#5c1f24")
+
+    def _find_local_insert_index(self, repository: LocalRepo) -> int:
+        """
+        Ermittelt die sortierte Einfuegeposition eines lokalen Repositories.
+
+        Eingabeparameter:
+        - repository: Neu einzufuegendes oder verschobenes Repository.
+
+        Rueckgabewerte:
+        - Zielindex innerhalb der lokalen In-Memory-Liste und Tabelle.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Tabelle bleibt alphabetisch stabil, ohne dafuer bei Einzelupdates komplett
+          neu aufgebaut werden zu muessen.
+        """
+
+        repository_key = repository.name.lower()
+        for index, current_repository in enumerate(self._local_repositories):
+            if repository_key < current_repository.name.lower():
+                return index
+        return len(self._local_repositories)
+
+    def _update_local_action_buttons(self) -> None:
+        """
+        Synchronisiert die lokalen Toolbar-Buttons mit der aktuellen Tabellenbelegung.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Die Auswertung bleibt an einer Stelle, damit Vollaufbau und Delta-Updates
+          dieselbe Button-Logik verwenden.
+        """
+
+        has_local = bool(self._local_repositories)
+        self._commit_button.setEnabled(has_local)
+        self._push_button.setEnabled(has_local)
+        self._struct_scan_button.setEnabled(has_local)
+
     def _build_local_name_item(self, repository: LocalRepo):
         """
         Erzeugt das Name-Item fuer die lokale Tabelle inklusive Pfad-Tooltip.
@@ -1016,20 +1134,25 @@ class MainWindow(QMainWindow):
         }
 
         menu = QMenu(self)
-        repair_action = menu.addAction("Repair remote")
-        remove_action = menu.addAction("Remove remote")
-        create_action = menu.addAction("Create GitHub repository")
-        reinitialize_action = menu.addAction("Reinitialize repository")
-
+        action_label_map = {
+            "repair_remote": "Repair remote",
+            "remove_remote": "Remove remote",
+            "create_remote": "Create GitHub repository",
+            "reinitialize_repository": "Reinitialize repository",
+        }
+        menu_actions: dict[str, object] = {}
+        for action_name in repository.available_actions:
+            label = action_label_map.get(action_name)
+            if not label:
+                continue
+            menu_actions[action_name] = menu.addAction(label)
+        if not menu_actions:
+            return
         selected_action = menu.exec(self.cursor().pos())
-        if selected_action == repair_action:
-            self.local_repo_action_requested.emit(repo_ref, "repair_remote")
-        elif selected_action == remove_action:
-            self.local_repo_action_requested.emit(repo_ref, "remove_remote")
-        elif selected_action == create_action:
-            self.local_repo_action_requested.emit(repo_ref, "create_remote")
-        elif selected_action == reinitialize_action:
-            self.local_repo_action_requested.emit(repo_ref, "reinitialize_repository")
+        for action_name, action in menu_actions.items():
+            if selected_action == action:
+                self.local_repo_action_requested.emit(repo_ref, action_name)
+                return
 
     def _show_remote_context_menu(self, row_index: int) -> None:
         """

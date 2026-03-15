@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 
 from core.paths import RuntimePaths
 from db.init_db import initialize_databases
@@ -79,6 +80,25 @@ class DummyRepoStructureService:
 
         self.calls += 1
         return 2
+
+
+class CountingInspectorService(DummyInspectorService):
+    """Merkt sich, wie oft ein echter Tiefenscan fuer ein Repository ausgefuehrt wurde."""
+
+    def __init__(self) -> None:
+        """
+        Initialisiert den Aufrufzaehler fuer spaetere Delta-Assertions.
+        """
+
+        self.calls = 0
+
+    def inspect_repository(self, repo_path: Path) -> dict[str, object]:
+        """
+        Erhoeht den Zaehler und liefert dann die bekannten Test-Metadaten zurueck.
+        """
+
+        self.calls += 1
+        return super().inspect_repository(repo_path)
 
 
 class DummyValidationGitHubService:
@@ -300,6 +320,81 @@ def test_repo_structure_service_indexes_files(tmp_path: Path) -> None:
     assert row["is_tracked"] == 1
 
 
+def test_repo_structure_service_updates_repo_files_via_delta(tmp_path: Path) -> None:
+    """
+    Prueft, dass der Dateiindex neue, geaenderte und verschwundene Dateien per Delta behandelt.
+    """
+
+    repo_root = tmp_path / "demo_delta"
+    (repo_root / "src").mkdir(parents=True)
+    (repo_root / ".git").mkdir()
+    app_file = repo_root / "src" / "app.py"
+    old_file = repo_root / "src" / "old.py"
+    new_file = repo_root / "src" / "new.py"
+    app_file.write_text("print('v1')", encoding="utf-8")
+    old_file.write_text("print('old')", encoding="utf-8")
+
+    paths = _build_runtime_paths(tmp_path)
+    repository = StateRepository(paths.state_db_file)
+    state = repository.upsert_repository(
+        RepositoryState(
+            name="demo_delta",
+            local_path=str(repo_root),
+            is_git_repo=True,
+            current_branch="main",
+            head_commit="abc123",
+            head_commit_date="2026-03-12T10:00:00+00:00",
+            has_remote=False,
+            remote_name="",
+            remote_url="",
+            remote_host="",
+            remote_owner="",
+            remote_repo_name="",
+            remote_exists_online=None,
+            remote_visibility="not_published",
+            visibility="not_published",
+            status="LOCAL_ONLY",
+            sync_state="LOCAL_ONLY",
+            health_state="local_only",
+            exists_local=True,
+            git_initialized=True,
+            remote_configured=False,
+            last_seen_at="2026-03-12T10:00:00+00:00",
+            last_checked_at="2026-03-12T10:00:00+00:00",
+            last_changed_at="2026-03-12T10:00:00+00:00",
+            last_local_scan_at="2026-03-12T10:00:00+00:00",
+            scan_fingerprint="initial",
+            status_hash="initial",
+        )
+    )
+    service = RepoStructureService(repository, DummyStructureGitService())
+
+    first_count = service.index_repository_files(int(state.id or 0), repo_root)
+    app_file.write_text("print('v2')", encoding="utf-8")
+    old_file.unlink()
+    new_file.write_text("print('new')", encoding="utf-8")
+    second_count = service.index_repository_files(int(state.id or 0), repo_root)
+
+    assert first_count == 2
+    assert second_count == 2
+    with sqlite_connection(paths.state_db_file) as connection:
+        rows = connection.execute(
+            """
+            SELECT relative_path, is_deleted
+            FROM repo_files
+            WHERE repo_id = ?
+            ORDER BY relative_path
+            """,
+            (int(state.id or 0),),
+        ).fetchall()
+
+    assert [(row["relative_path"], row["is_deleted"]) for row in rows] == [
+        ("src/app.py", 0),
+        ("src/new.py", 0),
+        ("src/old.py", 1),
+    ]
+
+
 def test_push_service_blocks_missing_remote_using_state_database(tmp_path: Path) -> None:
     """
     Prueft, dass ein als `REMOTE_MISSING` markiertes Repository nicht blind gepusht wird.
@@ -402,3 +497,81 @@ def test_repo_index_service_skips_file_index_for_broken_git_repositories(tmp_pat
     assert len(results) == 1
     assert results[0].status == "BROKEN_GIT"
     assert repo_structure_service.calls == 0
+
+
+def test_repo_index_service_skips_deep_scan_when_quick_fingerprint_is_unchanged(tmp_path: Path) -> None:
+    """
+    Prueft, dass ein unveraenderter leichter Fingerprint keinen zweiten Tiefenscan ausloest.
+    """
+
+    repo_root = tmp_path / "repos" / "demo_unchanged"
+    (repo_root / ".git").mkdir(parents=True)
+    inspector_service = CountingInspectorService()
+    paths = _build_runtime_paths(tmp_path)
+    repository = StateRepository(paths.state_db_file)
+    service = RepoIndexService(
+        state_repository=repository,
+        git_inspector_service=inspector_service,
+        repo_structure_service=DummyRepoStructureService(),
+    )
+
+    first_results = service.scan_root(tmp_path / "repos")
+    second_results = service.scan_root(tmp_path / "repos")
+
+    assert len(first_results) == 1
+    assert len(second_results) == 1
+    assert inspector_service.calls == 1
+    persisted = repository.fetch_repository_by_local_path(str(repo_root))
+    assert persisted is not None
+    assert persisted.needs_rescan is False
+    skipped_event = repository.fetch_latest_event(int(persisted.id or 0), "LOCAL_SCAN_SKIPPED_UNCHANGED")
+    assert skipped_event is not None
+
+
+def test_repo_index_service_hard_refresh_forces_tiefenscan_despite_unchanged_fingerprint(tmp_path: Path) -> None:
+    """
+    Prueft, dass ein Hard-Refresh auch bei unveraendertem Fingerprint erneut tief scannt.
+    """
+
+    repo_root = tmp_path / "repos" / "demo_hard_refresh"
+    (repo_root / ".git").mkdir(parents=True)
+    inspector_service = CountingInspectorService()
+    paths = _build_runtime_paths(tmp_path)
+    repository = StateRepository(paths.state_db_file)
+    service = RepoIndexService(
+        state_repository=repository,
+        git_inspector_service=inspector_service,
+        repo_structure_service=DummyRepoStructureService(),
+    )
+
+    service.scan_root(tmp_path / "repos")
+    service.scan_root(tmp_path / "repos", hard_refresh=True)
+
+    assert inspector_service.calls == 2
+
+
+def test_repo_index_service_marks_missing_repositories_soft_deleted(tmp_path: Path) -> None:
+    """
+    Prueft, dass ein zuvor bekanntes Repository bei spaeterem Verschwinden nur als missing markiert wird.
+    """
+
+    repo_root = tmp_path / "repos" / "demo_missing"
+    (repo_root / ".git").mkdir(parents=True)
+    paths = _build_runtime_paths(tmp_path)
+    repository = StateRepository(paths.state_db_file)
+    service = RepoIndexService(
+        state_repository=repository,
+        git_inspector_service=DummyInspectorService(),
+        repo_structure_service=DummyRepoStructureService(),
+    )
+
+    service.scan_root(tmp_path / "repos")
+    shutil.rmtree(repo_root)
+    second_results = service.scan_root(tmp_path / "repos")
+
+    assert second_results == []
+    persisted = repository.fetch_repository_by_local_path(str(repo_root))
+    assert persisted is not None
+    assert persisted.is_missing is True
+    assert persisted.is_deleted is True
+    assert persisted.exists_local is False

@@ -46,6 +46,24 @@ def test_initialize_databases_creates_files(tmp_path: Path) -> None:
     assert paths.repo_struct_db_file.exists()
     assert paths.state_db_file.exists()
 
+    with sqlite_connection(paths.state_db_file) as connection:
+        table_names = {
+            row["name"]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+        repository_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(repositories)").fetchall()
+        }
+        repo_status_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(repo_status)").fetchall()
+        }
+
+    assert {"repositories", "repo_status", "repo_files", "repo_status_events", "scan_runs"} <= table_names
+    assert {"repo_key", "source_type", "scan_fingerprint", "status_hash", "is_missing"} <= repository_columns
+    assert {"repo_id", "exists_local", "needs_rescan", "sync_state", "health_state"} <= repo_status_columns
+
 
 def test_has_successful_clone_matches_remote_url_or_repo_id(tmp_path: Path) -> None:
     """

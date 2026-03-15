@@ -88,12 +88,16 @@ class RepoStructureService:
                 )
             )
 
-        self._state_repository.replace_repo_files(repo_id, files)
+        delta_stats = self._state_repository.update_repo_files_delta(repo_id, files)
         if self._logger is not None:
             self._logger.event(
                 "scan",
                 "repo_structure_complete",
-                f"repo_id={repo_id} | repo_path={repo_path} | files={len(files)}",
+                (
+                    f"repo_id={repo_id} | repo_path={repo_path} | files={len(files)} | "
+                    f"inserted={delta_stats.inserted_count} | updated={delta_stats.updated_count} | "
+                    f"deleted={delta_stats.deleted_count} | unchanged={delta_stats.unchanged_count}"
+                ),
             )
         return len(files)
 

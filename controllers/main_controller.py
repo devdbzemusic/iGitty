@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
+
 from core.app_state import AppState
 from core.config import AppConfig
 from core.env import EnvSettings
@@ -158,6 +160,8 @@ class MainController:
 
         self._window.update_status(self._build_status_snapshot())
         self._logger.info("iGitty Grundgeruest initialisiert.")
+        self._local_repo_controller.bootstrap_local_repositories()
+        QTimer.singleShot(0, self._local_repo_controller.scan_local_repositories)
 
     def _scan_local_after_clone(self) -> None:
         """
@@ -297,6 +301,8 @@ class MainController:
         self._window.set_target_directory(new_directory)
         self._window.update_status(self._build_status_snapshot())
         self._logger.info(f"Zielordner auf '{new_directory}' gesetzt.")
+        self._local_repo_controller.bootstrap_local_repositories()
+        QTimer.singleShot(0, self._local_repo_controller.scan_local_repositories)
 
     def shutdown(self) -> None:
         """

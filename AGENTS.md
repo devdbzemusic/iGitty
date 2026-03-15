@@ -60,6 +60,16 @@ Der Schwerpunkt von **MVP Teil 1** liegt auf:
 7. **Keine Geheimnisse leaken**
    - Tokens, Zugangsdaten und andere sensible Inhalte niemals unmaskiert loggen oder anzeigen.
 
+8. **State-DB zuerst**
+   - Persistente Repository-Stammdaten, Status, Dateiindex und Scan-Ereignisse bleiben in SQLite die zentrale Quelle.
+   - Normale Refreshes sollen ueber Fingerprints und Delta-Updates unnoetige Tiefenscans vermeiden.
+   - Missing-/Soft-Delete-Marker sind zu bevorzugen, wenn Repositories temporaer verschwinden.
+
+9. **DB-first-UI**
+   - Lokale Listen sollen beim Start zuerst den letzten bekannten SQLite-Zustand anzeigen.
+   - Hintergrundsyncs sollen danach nur geaenderte Zeilen gezielt nachziehen statt komplette Listen neu aufzubauen.
+   - UI-Aktionen sollen zentral aus Zustand und Regeln abgeleitet werden.
+
 ---
 
 ## Technologie-Stack

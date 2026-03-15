@@ -9,6 +9,7 @@ from models.repo_models import LocalRepo
 from models.state_models import RepositoryState
 from services.git_service import GitService
 from services.github_service import GitHubService
+from services.repo_action_resolver import RepoActionResolver
 from services.repo_index_service import RepoIndexService
 from services.state_db import compute_repository_status
 
@@ -22,6 +23,7 @@ class LocalRepoService:
         github_service: GitHubService | None = None,
         repo_index_service: RepoIndexService | None = None,
         logger: AppLogger | None = None,
+        repo_action_resolver: RepoActionResolver | None = None,
     ) -> None:
         """
         Initialisiert den Service mit einer Git-Abhaengigkeit.
@@ -43,14 +45,41 @@ class LocalRepoService:
         self._github_service = github_service
         self._repo_index_service = repo_index_service
         self._logger = logger
+        self._repo_action_resolver = repo_action_resolver or RepoActionResolver()
         self._remote_metadata_cache: dict[str, tuple[str, int]] = {}
 
-    def scan_repositories(self, root_path: Path) -> list[LocalRepo]:
+    def load_cached_repositories(self, root_path: Path) -> list[LocalRepo]:
+        """
+        Laedt bereits bekannte lokale Repositories fuer einen Root sofort aus der State-Datenbank.
+
+        Eingabeparameter:
+        - root_path: Basisverzeichnis des aktuell aktiven lokalen Arbeitsbereichs.
+
+        Rueckgabewerte:
+        - Liste der aus SQLite aufgebauten lokalen Repository-View-Modelle.
+
+        Moegliche Fehlerfaelle:
+        - Ohne konfigurierten State-Index steht nur eine leere Liste zur Verfuegung.
+
+        Wichtige interne Logik:
+        - Die Methode ist die DB-first-Eintrittsschicht fuer STUFE 2 und fuehrt selbst
+          keinen Tiefenscan aus.
+        """
+
+        if self._repo_index_service is None:
+            return []
+        repository_states = self._repo_index_service.fetch_cached_root(root_path)
+        mapped_repositories = [self._map_state_to_local_repo(repository) for repository in repository_states]
+        mapped_repositories.sort(key=lambda item: item.name.lower())
+        return mapped_repositories
+
+    def scan_repositories(self, root_path: Path, hard_refresh: bool = False) -> list[LocalRepo]:
         """
         Durchsucht einen Wurzelordner rekursiv nach Git-Repositories.
 
         Eingabeparameter:
         - root_path: Startordner fuer die Suche.
+        - hard_refresh: Erzwingt einen vollstaendigen Tiefenscan im State-Index.
 
         Rueckgabewerte:
         - Liste aller erkannten und angereicherten lokalen Repositories.
@@ -74,8 +103,12 @@ class LocalRepoService:
 
         if self._repo_index_service is not None:
             if self._logger is not None:
-                self._logger.event("scan", "local_scan_using_state_index", f"root_path={root_path}")
-            repository_states = self._repo_index_service.scan_root(root_path)
+                self._logger.event(
+                    "scan",
+                    "local_scan_using_state_index",
+                    f"root_path={root_path} | hard_refresh={hard_refresh}",
+                )
+            repository_states = self._repo_index_service.scan_root(root_path, hard_refresh=hard_refresh)
             mapped_repositories = [self._map_state_to_local_repo(repository) for repository in repository_states]
             if self._logger is not None:
                 self._logger.event(
@@ -239,8 +272,17 @@ class LocalRepoService:
             state_repo_id=int(repository.id or 0),
             remote_status=repository.status,
             remote_exists_online=repository.remote_exists_online,
-            recommended_action=self._build_recommended_action(repository.status),
+            exists_local=repository.exists_local,
+            needs_rescan=repository.needs_rescan,
+            health_state=repository.health_state,
+            sync_state=repository.sync_state,
+            state_status_hash=repository.status_hash,
         )
+        mapped_repo.recommended_action = self._repo_action_resolver.resolve_local_primary_action(mapped_repo)
+        mapped_repo.available_actions = [
+            action.action_id
+            for action in self._repo_action_resolver.resolve_local_actions(mapped_repo)
+        ]
         if self._logger is not None:
             self._logger.event(
                 "scan",
@@ -248,33 +290,6 @@ class LocalRepoService:
                 f"name={mapped_repo.name} | status={mapped_repo.remote_status} | local_path={mapped_repo.full_path}",
             )
         return mapped_repo
-
-    def _build_recommended_action(self, remote_status: str) -> str:
-        """
-        Leitet aus dem Repository-Status eine kurze UI-Empfehlung ab.
-
-        Eingabeparameter:
-        - remote_status: Fachlicher Gesamtstatus des Repositories.
-
-        Rueckgabewerte:
-        - Kurzer Handlungshinweis fuer die lokale Tabelle.
-
-        Moegliche Fehlerfaelle:
-        - Unbekannte Stati liefern einen neutralen Platzhalter.
-
-        Wichtige interne Logik:
-        - Die Empfehlung bleibt bewusst knapp, damit die eigentliche Aktion im Controller entschieden wird.
-        """
-
-        recommendations = {
-            "REMOTE_OK": "Normal pushen",
-            "LOCAL_ONLY": "GitHub-Repo anlegen",
-            "REMOTE_MISSING": "Remote reparieren",
-            "REMOTE_UNREACHABLE": "Remote pruefen",
-            "BROKEN_GIT": "Repo reparieren",
-            "NOT_INITIALIZED": "Git initialisieren",
-        }
-        return recommendations.get(remote_status, "-")
 
     def _guess_language(self, repo_path: Path) -> str:
         """

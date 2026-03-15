@@ -149,6 +149,92 @@ class RepoTableWidget(QGroupBox):
                 self._table.setItem(row_index, column_index, QTableWidgetItem(value))
 
         self._table.resizeColumnsToContents()
+        self.apply_filter(self._filter_input.text())
+
+    def insert_row(self, row_index: int, row_values: list[str]) -> None:
+        """
+        Fuegt genau eine neue Tabellenzeile an einer bestimmten Position ein.
+
+        Eingabeparameter:
+        - row_index: Zielposition fuer die neue Zeile.
+        - row_values: Bereits vorbereitete Zellwerte der neuen Zeile.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Positionen werden von Qt defensiv behandelt.
+
+        Wichtige interne Logik:
+        - Die Methode erlaubt gezielte Delta-Updates, ohne die komplette Tabelle neu aufzubauen.
+        """
+
+        self._table.insertRow(row_index)
+        self._write_row(row_index, row_values)
+        self._table.resizeColumnsToContents()
+        self.apply_filter(self._filter_input.text())
+
+    def update_row(self, row_index: int, row_values: list[str]) -> None:
+        """
+        Aktualisiert die Textzellen einer bestehenden Tabellenzeile gezielt.
+
+        Eingabeparameter:
+        - row_index: Zielzeile der Aktualisierung.
+        - row_values: Neue Zellwerte fuer die Zeile.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Zeilen werden von Qt defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Checkbox-Spalte und restliche Zellen bleiben in derselben Tabellenzeile erhalten,
+          was partielle UI-Aktualisierungen deutlich guenstiger macht.
+        """
+
+        self._write_row(row_index, row_values)
+        self._table.resizeColumnsToContents()
+        self.apply_filter(self._filter_input.text())
+
+    def remove_row(self, row_index: int) -> None:
+        """
+        Entfernt genau eine Tabellenzeile aus der internen Qt-Tabelle.
+
+        Eingabeparameter:
+        - row_index: Zu entfernende Zeile.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Zeilen werden von Qt defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Methode ist Teil der Delta-Update-Unterstuetzung fuer STUFE 2.
+        """
+
+        self._table.removeRow(row_index)
+        self.apply_filter(self._filter_input.text())
+
+    def row_count(self) -> int:
+        """
+        Liefert die aktuelle Anzahl sichtbarer Datenzeilen der Tabelle.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Anzahl der aktuell vorhandenen Tabellenzeilen.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Der schmale Getter erleichtert gezielte UI-Operationen ausserhalb des Widgets.
+        """
+
+        return self._table.rowCount()
 
     def apply_filter(self, filter_text: str) -> None:
         """
@@ -317,6 +403,31 @@ class RepoTableWidget(QGroupBox):
             if item is not None:
                 item.setBackground(color)
 
+    def clear_row_background(self, row_index: int) -> None:
+        """
+        Entfernt gesetzte Hintergrundfarben einer Tabellenzeile wieder.
+
+        Eingabeparameter:
+        - row_index: Zielzeile der Ruecksetzung.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Zeilen werden defensiv ignoriert.
+
+        Wichtige interne Logik:
+        - Die Methode wird fuer gezielte Delta-Updates benoetigt, wenn ein Eintrag
+          seinen Problemstatus wieder verliert.
+        """
+
+        from PySide6.QtGui import QBrush
+
+        for column_index in range(self._table.columnCount()):
+            item = self._table.item(row_index, column_index)
+            if item is not None:
+                item.setBackground(QBrush())
+
     def _emit_context_request(self, position) -> None:
         """
         Meldet die Tabellenzeile eines Kontextmenue-Aufrufs nach aussen.
@@ -358,3 +469,42 @@ class RepoTableWidget(QGroupBox):
         selected_items = self._table.selectedItems()
         if selected_items:
             self.row_selected.emit(selected_items[0].row())
+
+    def _write_row(self, row_index: int, row_values: list[str]) -> None:
+        """
+        Schreibt die Standardzellen einer Tabellenzeile inklusive Checkbox-Spalte.
+
+        Eingabeparameter:
+        - row_index: Zielzeile innerhalb der Tabelle.
+        - row_values: Bereits vorbereitete Zellwerte pro Spalte.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Inkonsistente Spaltenanzahl fuehrt defensiv zu leeren Zellen.
+
+        Wichtige interne Logik:
+        - Die gemeinsame interne Schreiblogik haelt Vollaufbau und Delta-Updates konsistent.
+        """
+
+        checkbox_item = self._table.item(row_index, 0)
+        check_state = Qt.CheckState.Unchecked
+        if checkbox_item is not None:
+            check_state = checkbox_item.checkState()
+        checkbox_item = QTableWidgetItem()
+        checkbox_item.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsUserCheckable
+            | Qt.ItemFlag.ItemIsSelectable
+        )
+        checkbox_item.setCheckState(check_state)
+        self._table.setItem(row_index, 0, checkbox_item)
+
+        for column_index in range(1, len(self._columns)):
+            value = row_values[column_index] if column_index < len(row_values) else ""
+            existing_item = self._table.item(row_index, column_index)
+            if existing_item is None:
+                self._table.setItem(row_index, column_index, QTableWidgetItem(value))
+            else:
+                existing_item.setText(value)

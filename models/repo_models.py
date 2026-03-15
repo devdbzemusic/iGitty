@@ -63,3 +63,9 @@ class LocalRepo:
     remote_status: str = "LOCAL_ONLY"
     remote_exists_online: int | None = None
     recommended_action: str = "-"
+    available_actions: list[str] = field(default_factory=list)
+    exists_local: bool = True
+    needs_rescan: bool = False
+    health_state: str = "unknown"
+    sync_state: str = "NOT_INITIALIZED"
+    state_status_hash: str = ""

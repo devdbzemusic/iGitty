@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, Signal
 
 from core.app_state import AppState
 from core.logger import AppLogger
@@ -19,6 +19,10 @@ from ui.workers.local_scan_worker import LocalScanWorker
 
 class LocalRepoController(QObject):
     """Koordiniert das rekursive Scannen lokaler Git-Repositories."""
+
+    local_repository_changed = Signal(object)
+    local_repository_removed = Signal(str)
+    local_repository_list_loaded = Signal(list)
 
     def __init__(
         self,
@@ -55,16 +59,51 @@ class LocalRepoController(QObject):
         self._logger = logger
         self._job_log_repository = job_log_repository
         self._current_worker: LocalScanWorker | None = None
+        self._last_loaded_root_path: Path | None = None
 
         self._window.scan_local_requested.connect(self.scan_local_repositories)
         self._window.local_filter_changed.connect(self._window.set_local_filter_text)
+        self.local_repository_changed.connect(self._window.upsert_local_repository)
+        self.local_repository_removed.connect(self._window.remove_local_repository)
+        self.local_repository_list_loaded.connect(self._window.populate_local_repositories)
 
-    def scan_local_repositories(self) -> None:
+    def bootstrap_local_repositories(self) -> None:
+        """
+        Laedt den zuletzt bekannten lokalen Zustand sofort aus SQLite in die UI.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Fehler beim State-Lesen werden geloggt und leeren die UI nicht ungeordnet.
+
+        Wichtige interne Logik:
+        - Die Methode ist die STUFE-2-Eintrittsschicht fuer DB-first-Start, bevor der
+          Hintergrund-Refresh weitere Aenderungen nachzieht.
+        """
+
+        try:
+            root_path = Path(self._state.current_target_dir)
+            self._last_loaded_root_path = root_path
+            cached_repositories = self._local_repo_service.load_cached_repositories(root_path)
+            self.local_repository_list_loaded.emit(cached_repositories)
+            self._state.local_repo_count = len(cached_repositories)
+            self._window.update_status(self._build_status_snapshot())
+            self._logger.info(
+                f"{len(cached_repositories)} lokale Repositories direkt aus SQLite geladen."
+            )
+        except Exception as error:  # noqa: BLE001
+            self._logger.exception(f"DB-first-Laden lokaler Repositories fehlgeschlagen: {error}")
+
+    def scan_local_repositories(self, hard_refresh: bool = False) -> None:
         """
         Startet das asynchrone Scannen des aktuellen Zielordners.
 
         Eingabeparameter:
-        - Keine.
+        - hard_refresh: Erzwingt einen vollstaendigen Tiefenscan statt Delta-Skip.
 
         Rueckgabewerte:
         - Keine.
@@ -80,10 +119,14 @@ class LocalRepoController(QObject):
             return
 
         self._window.set_local_loading(True)
-        self._logger.info(f"Starte lokalen Repo-Scan in '{self._state.current_target_dir}'.")
+        self._logger.info(
+            f"Starte lokalen Repo-Scan in '{self._state.current_target_dir}' (hard_refresh={hard_refresh})."
+        )
+        self._last_loaded_root_path = Path(self._state.current_target_dir)
         self._current_worker = LocalScanWorker(
             local_repo_service=self._local_repo_service,
             root_path=Path(self._state.current_target_dir),
+            hard_refresh=hard_refresh,
         )
         self._current_worker.repositories_loaded.connect(self._on_repositories_loaded)
         self._current_worker.loading_failed.connect(self._on_loading_failed)
@@ -106,11 +149,10 @@ class LocalRepoController(QObject):
         - Aktualisiert die Tabelle erst nach vollstaendigem Scan, damit das UI konsistent bleibt.
         """
 
-        self._state.local_repo_count = len(repositories)
-        self._window.populate_local_repositories(repositories)
+        self._apply_local_repository_delta()
         self._window.set_local_loading(False)
         self._window.update_status(self._build_status_snapshot())
-        self._logger.info(f"{len(repositories)} lokale Repositories erfolgreich erkannt.")
+        self._logger.info(f"{len(repositories)} lokale Repositories erfolgreich synchronisiert.")
         self._job_log_repository.add_entry(
             JobLogEntry(
                 job_id=str(uuid4()),
@@ -118,7 +160,7 @@ class LocalRepoController(QObject):
                 source_type="local",
                 repo_name="*",
                 status="success",
-                message=f"{len(repositories)} lokale Repositories erkannt",
+                message=f"{len(repositories)} lokale Repositories synchronisiert",
             )
         )
 
@@ -233,7 +275,7 @@ class LocalRepoController(QObject):
             if repository is None:
                 self._logger.warning(f"Lokaler Eintrag konnte nicht aktualisiert werden: {local_path}")
                 return
-            self._window.upsert_local_repository(repository)
+            self.local_repository_changed.emit(repository)
             self._state.local_repo_count = len(self._window.get_local_repositories())
             self._window.update_status(self._build_status_snapshot())
             self._window.local_repo_selected.emit(
@@ -267,3 +309,67 @@ class LocalRepoController(QObject):
             self._logger.info(f"Lokaler Eintrag fuer '{repository.name}' wurde aktualisiert.")
         except Exception as error:  # noqa: BLE001
             self._logger.exception(f"Direkte Aktualisierung des lokalen Eintrags fehlgeschlagen: {error}")
+
+    def _apply_local_repository_delta(self) -> None:
+        """
+        Laedt den aktuellen SQLite-Zustand und uebertraegt nur veraenderte lokale Eintraege in die UI.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Fehler beim State-Lesen werden an den aufrufenden Workflow weitergereicht.
+
+        Wichtige interne Logik:
+        - Die UI bleibt DB-first, weil nach einem Hintergrundscan der Zustand erneut aus
+          SQLite gelesen und nur als Delta auf die Tabelle angewendet wird.
+        """
+
+        root_path = self._last_loaded_root_path or Path(self._state.current_target_dir)
+        current_repositories = self._local_repo_service.load_cached_repositories(root_path)
+        previous_by_path = {
+            repository.full_path: repository
+            for repository in self._window.get_local_repositories()
+        }
+        current_by_path = {
+            repository.full_path: repository
+            for repository in current_repositories
+        }
+
+        if not previous_by_path:
+            self.local_repository_list_loaded.emit(current_repositories)
+            self._state.local_repo_count = len(current_repositories)
+            return
+
+        changed_count = 0
+        removed_count = 0
+        for local_path, repository in current_by_path.items():
+            previous_repository = previous_by_path.get(local_path)
+            if (
+                previous_repository is None
+                or previous_repository.state_status_hash != repository.state_status_hash
+                or previous_repository.exists_local != repository.exists_local
+                or previous_repository.recommended_action != repository.recommended_action
+            ):
+                self.local_repository_changed.emit(repository)
+                changed_count += 1
+
+        for local_path in previous_by_path:
+            if local_path in current_by_path:
+                continue
+            self.local_repository_removed.emit(local_path)
+            removed_count += 1
+
+        self._state.local_repo_count = len(current_repositories)
+        self._logger.event(
+            "state",
+            "local_ui_delta_applied",
+            (
+                f"root_path={root_path} | changed={changed_count} | removed={removed_count} | "
+                f"total={len(current_repositories)}"
+            ),
+            level=20,
+        )

@@ -9,6 +9,7 @@ from core.logger import AppLogger
 from db.state_repository import StateRepository
 from models.state_models import RepoStatusEvent, RepositoryState
 from services.git_inspector_service import GitInspectorService
+from services.repo_fingerprint_service import RepoFingerprintService
 from services.remote_validation_service import RemoteValidationService
 from services.repo_structure_service import RepoStructureService
 from services.state_db import compute_repository_status
@@ -21,6 +22,7 @@ class RepoIndexService:
         self,
         state_repository: StateRepository,
         git_inspector_service: GitInspectorService,
+        repo_fingerprint_service: RepoFingerprintService | None = None,
         remote_validation_service: RemoteValidationService | None = None,
         repo_structure_service: RepoStructureService | None = None,
         logger: AppLogger | None = None,
@@ -46,16 +48,18 @@ class RepoIndexService:
 
         self._state_repository = state_repository
         self._git_inspector_service = git_inspector_service
+        self._repo_fingerprint_service = repo_fingerprint_service or RepoFingerprintService()
         self._remote_validation_service = remote_validation_service
         self._repo_structure_service = repo_structure_service
         self._logger = logger
 
-    def scan_root(self, root_path: Path) -> list[RepositoryState]:
+    def scan_root(self, root_path: Path, hard_refresh: bool = False) -> list[RepositoryState]:
         """
         Scannt einen Wurzelordner nach Git-Repositories und persistiert den aktuellen Zustand.
 
         Eingabeparameter:
         - root_path: Zu scannender Basisordner.
+        - hard_refresh: Erzwingt Tiefenscans auch fuer unveraenderte Fingerprints.
 
         Rueckgabewerte:
         - Liste aller aktualisierten RepositoryState-Eintraege.
@@ -74,16 +78,71 @@ class RepoIndexService:
             return []
 
         if self._logger is not None:
-            self._logger.event("scan", "repo_index_root_begin", f"root_path={root_path}")
+            self._logger.event(
+                "scan",
+                "repo_index_root_begin",
+                f"root_path={root_path} | hard_refresh={hard_refresh}",
+            )
         indexed_repositories: list[RepositoryState] = []
         scan_timestamp = self._utc_now()
+        scan_started_at = datetime.now(timezone.utc)
+        scan_type = "local_hard_refresh" if hard_refresh else "local_normal_refresh"
+        scan_run_id = self._state_repository.create_scan_run(scan_type, scan_timestamp)
+        known_repositories = {
+            repository.local_path: repository
+            for repository in self._state_repository.fetch_repositories_by_root_path(str(root_path))
+        }
+        seen_local_paths: set[str] = set()
+        changed_count = 0
+        unchanged_count = 0
+        error_count = 0
         for current_path, dir_names, _file_names in root_path.walk():
             if ".git" not in dir_names:
                 continue
 
+            repo_path = Path(current_path)
+            seen_local_paths.add(str(repo_path))
             if self._logger is not None:
-                self._logger.event("scan", "repo_index_repository_found", f"repo_path={current_path}")
-            repository = self._inspect_repository(Path(current_path), scan_timestamp)
+                self._logger.event("scan", "repo_index_repository_found", f"repo_path={repo_path}")
+            existing_repository = known_repositories.get(str(repo_path))
+            quick_fingerprint = self._repo_fingerprint_service.build_local_quick_fingerprint(repo_path)
+
+            if (
+                existing_repository is not None
+                and not hard_refresh
+                and existing_repository.scan_fingerprint == quick_fingerprint
+                and not existing_repository.needs_rescan
+                and not existing_repository.is_missing
+            ):
+                repository = self._state_repository.touch_repository_seen(
+                    int(existing_repository.id or 0),
+                    scan_timestamp,
+                    quick_fingerprint,
+                )
+                if repository is not None:
+                    indexed_repositories.append(repository)
+                    unchanged_count += 1
+                    self._state_repository.add_status_event(
+                        RepoStatusEvent(
+                            repo_id=int(repository.id or 0),
+                            event_type="LOCAL_SCAN_SKIPPED_UNCHANGED",
+                            severity="debug",
+                            message=f"Leichter Fingerprint unveraendert fuer '{repository.name}'.",
+                            created_at=scan_timestamp,
+                        )
+                    )
+                dir_names[:] = []
+                continue
+
+            try:
+                repository = self._inspect_repository(repo_path, scan_timestamp, quick_fingerprint)
+            except Exception as error:  # noqa: BLE001
+                error_count += 1
+                if self._logger is not None:
+                    self._logger.exception(f"Tiefenscan fehlgeschlagen fuer '{repo_path}': {error}")
+                dir_names[:] = []
+                continue
+
             repository = self._state_repository.upsert_repository(repository)
             self._state_repository.add_status_event(
                 RepoStatusEvent(
@@ -134,24 +193,46 @@ class RepoIndexService:
                     f"name={repository.name} | repo_id={repository.id} | reason=repository_is_not_valid_git_repo",
                 )
 
+            repository.needs_rescan = False
+            repository.status_hash = self._repo_fingerprint_service.build_repository_status_hash(repository)
+            repository = self._state_repository.upsert_repository(repository)
             indexed_repositories.append(repository)
+            changed_count += 1
             dir_names[:] = []
 
+        missing_count = self._state_repository.mark_missing_repositories(str(root_path), seen_local_paths, scan_timestamp)
+        if missing_count:
+            changed_count += missing_count
         indexed_repositories.sort(key=lambda item: item.name.lower())
+        finished_at = self._utc_now()
+        duration_ms = int((datetime.now(timezone.utc) - scan_started_at).total_seconds() * 1000)
+        self._state_repository.complete_scan_run(
+            scan_run_id,
+            finished_at,
+            duration_ms,
+            changed_count,
+            unchanged_count,
+            error_count,
+        )
         if self._logger is not None:
             self._logger.event(
                 "scan",
                 "repo_index_root_complete",
-                f"root_path={root_path} | repositories={len(indexed_repositories)}",
+                (
+                    f"root_path={root_path} | repositories={len(indexed_repositories)} | "
+                    f"changed={changed_count} | unchanged={unchanged_count} | missing={missing_count} | "
+                    f"errors={error_count} | hard_refresh={hard_refresh}"
+                ),
             )
         return indexed_repositories
 
-    def index_repository(self, repo_path: Path) -> RepositoryState | None:
+    def index_repository(self, repo_path: Path, hard_refresh: bool = True) -> RepositoryState | None:
         """
         Aktualisiert gezielt genau ein lokales Repository im State-Layer.
 
         Eingabeparameter:
         - repo_path: Vollstaendiger Pfad des lokalen Repositories.
+        - hard_refresh: Erzwingt einen Tiefenscan auch bei unveraendertem Fingerprint.
 
         Rueckgabewerte:
         - Aktualisierter `RepositoryState` oder `None`, wenn der Pfad nicht existiert.
@@ -170,7 +251,29 @@ class RepoIndexService:
             return None
 
         scan_timestamp = self._utc_now()
-        repository = self._inspect_repository(repo_path, scan_timestamp)
+        quick_fingerprint = self._repo_fingerprint_service.build_local_quick_fingerprint(repo_path)
+        existing_repository = self._state_repository.fetch_repository_by_local_path(str(repo_path))
+        if (
+            existing_repository is not None
+            and not hard_refresh
+            and existing_repository.scan_fingerprint == quick_fingerprint
+            and not existing_repository.needs_rescan
+            and not existing_repository.is_missing
+        ):
+            repository = self._state_repository.touch_repository_seen(
+                int(existing_repository.id or 0),
+                scan_timestamp,
+                quick_fingerprint,
+            )
+            if repository is not None and self._logger is not None:
+                self._logger.event(
+                    "scan",
+                    "repo_index_single_skipped_unchanged",
+                    f"repo_path={repo_path} | status={repository.status}",
+                )
+            return repository
+
+        repository = self._inspect_repository(repo_path, scan_timestamp, quick_fingerprint)
         repository = self._state_repository.upsert_repository(repository)
         self._state_repository.add_status_event(
             RepoStatusEvent(
@@ -221,6 +324,9 @@ class RepoIndexService:
                 f"name={repository.name} | repo_id={repository.id} | reason=repository_is_not_valid_git_repo",
             )
 
+        repository.needs_rescan = False
+        repository.status_hash = self._repo_fingerprint_service.build_repository_status_hash(repository)
+        repository = self._state_repository.upsert_repository(repository)
         if self._logger is not None:
             self._logger.event(
                 "scan",
@@ -229,13 +335,33 @@ class RepoIndexService:
             )
         return repository
 
-    def _inspect_repository(self, repo_path: Path, scan_timestamp: str) -> RepositoryState:
+    def fetch_cached_root(self, root_path: Path) -> list[RepositoryState]:
+        """
+        Liest bekannte persistierte Repository-Zustaende fuer einen Root direkt aus der State-Datenbank.
+
+        Eingabeparameter:
+        - root_path: Basisverzeichnis des lokalen Arbeitsbereichs.
+
+        Rueckgabewerte:
+        - Liste aller zu diesem Root passenden persistierten Repository-Zustaende.
+
+        Moegliche Fehlerfaelle:
+        - SQLite-Fehler beim Lesen der State-Datenbank.
+
+        Wichtige interne Logik:
+        - Die Methode dient der DB-first-Initialisierung in STUFE 2 und fuehrt keinen Scan aus.
+        """
+
+        return self._state_repository.fetch_repositories_by_root_path(str(root_path))
+
+    def _inspect_repository(self, repo_path: Path, scan_timestamp: str, quick_fingerprint: str) -> RepositoryState:
         """
         Baut einen persistierbaren RepositoryState aus der Git-Inspektion auf.
 
         Eingabeparameter:
         - repo_path: Lokaler Pfad des gefundenen Repositories.
         - scan_timestamp: Zeitstempel des aktuellen Root-Scans.
+        - quick_fingerprint: Bereits zuvor berechneter leichter Delta-Fingerprint.
 
         Rueckgabewerte:
         - Vorbereiteter RepositoryState fuer Persistenz und Weiterverarbeitung.
@@ -256,7 +382,18 @@ class RepoIndexService:
                 self._logger.warning(f"Repository konnte nicht inspiziert werden: {repo_path} | {error}")
             return RepositoryState(
                 name=repo_path.name,
+                repo_key=f"local::{str(repo_path).lower()}",
+                source_type="local",
                 local_path=str(repo_path),
+                visibility="unknown",
+                is_archived=False,
+                is_deleted=False,
+                is_missing=False,
+                last_seen_at=scan_timestamp,
+                last_changed_at=scan_timestamp,
+                last_checked_at=scan_timestamp,
+                scan_fingerprint=quick_fingerprint,
+                status_hash="",
                 is_git_repo=False,
                 current_branch="",
                 head_commit="",
@@ -269,6 +406,19 @@ class RepoIndexService:
                 remote_repo_name="",
                 remote_exists_online=None,
                 remote_visibility="unknown",
+                exists_local=True,
+                exists_remote=None,
+                git_initialized=False,
+                remote_configured=False,
+                has_uncommitted_changes=False,
+                ahead_count=0,
+                behind_count=0,
+                is_diverged=False,
+                auth_state="unknown",
+                sync_state="BROKEN_GIT",
+                health_state="broken_git",
+                dirty_hint=False,
+                needs_rescan=True,
                 status="BROKEN_GIT",
                 last_local_scan_at=scan_timestamp,
                 last_remote_check_at="",
@@ -282,20 +432,46 @@ class RepoIndexService:
         )
 
         repository_state = RepositoryState(
+            repo_key=f"local::{str(repo_path).lower()}",
             name=str(data.get("name") or repo_path.name),
+            source_type="local",
             local_path=str(data.get("local_path") or repo_path),
+            remote_url=str(data.get("remote_url") or ""),
+            github_repo_id=0,
+            default_branch=str(data.get("branch") or ""),
+            visibility="unknown" if data.get("has_remote") else "not_published",
+            is_archived=False,
+            is_deleted=False,
+            is_missing=False,
+            last_seen_at=scan_timestamp,
+            last_changed_at=scan_timestamp,
+            last_checked_at=scan_timestamp,
+            scan_fingerprint=quick_fingerprint,
+            status_hash="",
             is_git_repo=is_git_repo,
             current_branch=str(data.get("branch") or ""),
             head_commit=str(data.get("head_commit") or ""),
             head_commit_date=str(data.get("head_commit_date") or ""),
             has_remote=bool(data.get("has_remote")),
             remote_name=str(data.get("remote_name") or ""),
-            remote_url=str(data.get("remote_url") or ""),
             remote_host=str(data.get("remote_host") or ""),
             remote_owner=str(data.get("remote_owner") or ""),
             remote_repo_name=str(data.get("remote_repo_name") or ""),
             remote_exists_online=None,
             remote_visibility="unknown" if data.get("has_remote") else "not_published",
+            exists_local=True,
+            exists_remote=None,
+            git_initialized=is_git_repo,
+            remote_configured=bool(data.get("has_remote")),
+            has_uncommitted_changes=bool(data.get("has_uncommitted_changes")),
+            ahead_count=int(data.get("ahead_count") or 0),
+            behind_count=int(data.get("behind_count") or 0),
+            is_diverged=bool(data.get("is_diverged")),
+            auth_state="unknown",
+            sync_state=status,
+            health_state=self._build_health_state(status),
+            dirty_hint=bool(data.get("has_uncommitted_changes")),
+            needs_rescan=True,
             status=status,
             last_local_scan_at=scan_timestamp,
             last_remote_check_at="",
@@ -307,6 +483,34 @@ class RepoIndexService:
                 f"name={repository_state.name} | status={repository_state.status} | has_remote={repository_state.has_remote}",
             )
         return repository_state
+
+    def _build_health_state(self, status: str) -> str:
+        """
+        Leitet aus dem aktuellen Repository-Status einen kompakten Gesundheitswert ab.
+
+        Eingabeparameter:
+        - status: Fachlicher Gesamtstatus des Repositories.
+
+        Rueckgabewerte:
+        - Kurzer technischer Health-State fuer den persistierten Status-Layer.
+
+        Moegliche Fehlerfaelle:
+        - Unbekannte Stati fallen auf `unknown` zurueck.
+
+        Wichtige interne Logik:
+        - Die Abbildung bleibt bewusst zentral, damit spaetere UI-Resolver und Diagnosen
+          nicht an mehreren Stellen eigene Statusinterpretationen pflegen.
+        """
+
+        mapping = {
+            "REMOTE_OK": "healthy",
+            "LOCAL_ONLY": "local_only",
+            "REMOTE_MISSING": "missing_remote",
+            "REMOTE_UNREACHABLE": "remote_unreachable",
+            "BROKEN_GIT": "broken_git",
+            "NOT_INITIALIZED": "not_initialized",
+        }
+        return mapping.get(status, "unknown")
 
     def _utc_now(self) -> str:
         """
