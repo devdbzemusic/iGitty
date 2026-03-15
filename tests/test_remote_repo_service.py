@@ -123,3 +123,27 @@ def test_remote_repo_service_marks_missing_remote_repositories_and_removes_them_
     assert len(first_repositories) == 1
     assert second_repositories == []
     assert service.load_cached_repositories() == []
+
+
+def test_remote_repo_service_can_cache_multiple_remote_repositories_without_local_path_conflict(tmp_path: Path) -> None:
+    """
+    Prueft, dass mehrere reine Remote-Repositories trotz leerem lokalem Pfad gemeinsam gespeichert werden koennen.
+    """
+
+    service = _create_service(
+        tmp_path,
+        [
+            (
+                [
+                    _build_remote_repo(repo_id=7, name="demo", full_name="dbzs/demo"),
+                    _build_remote_repo(repo_id=8, name="tool", full_name="dbzs/tool"),
+                ],
+                RateLimitInfo(limit=5000, remaining=4999, reset_at="-"),
+            )
+        ],
+    )
+
+    repositories, _rate_limit = service.sync_repositories()
+
+    assert len(repositories) == 2
+    assert {repository.repo_id for repository in repositories} == {7, 8}

@@ -60,6 +60,7 @@ class StateRepository:
         repository.last_changed_at = repository.last_changed_at or repository.last_checked_at
         repository.visibility = repository.visibility or repository.remote_visibility or "unknown"
         repository.default_branch = repository.default_branch or repository.current_branch or ""
+        database_local_path = repository.local_path or None
 
         with sqlite_connection(self._database_file) as connection:
             existing = connection.execute(
@@ -89,7 +90,7 @@ class StateRepository:
                 repository.repo_key,
                 repository.name,
                 repository.source_type,
-                repository.local_path,
+                database_local_path,
                 repository.remote_url,
                 repository.github_repo_id,
                 repository.default_branch,
