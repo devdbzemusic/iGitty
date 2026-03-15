@@ -191,6 +191,39 @@ class GitHubService:
             message = response.json().get("message", "Repository konnte nicht geloescht werden")
             raise GitHubApiError(f"GitHub API Fehler {response.status_code}: {message}")
 
+    def update_repository_visibility(self, owner: str, name: str, private: bool) -> RemoteRepo:
+        """
+        Aendert die Sichtbarkeit eines bestehenden GitHub-Repositories.
+
+        Eingabeparameter:
+        - owner: GitHub-Owner des Ziel-Repositories.
+        - name: Repository-Name.
+        - private: Zielzustand fuer die GitHub-API; `True` bedeutet privat.
+
+        Rueckgabewerte:
+        - Das von GitHub zurueckgelieferte Repository im internen Datamodell.
+
+        Moegliche Fehlerfaelle:
+        - Fehlendes Access Token.
+        - GitHub lehnt die Sichtbarkeitsaenderung ab.
+
+        Wichtige interne Logik:
+        - Die Methode nutzt denselben Repository-Endpoint wie andere Metadatenoperationen,
+          aendert aber ausschliesslich das `private`-Flag, damit keine unbeabsichtigten
+          Seiteneffekte auf andere Repository-Eigenschaften entstehen.
+        """
+
+        self._ensure_authorization()
+        response = self._session.patch(
+            f"https://api.github.com/repos/{owner}/{name}",
+            json={"private": private},
+            timeout=self._timeout_seconds,
+        )
+        if response.status_code >= 400:
+            message = response.json().get("message", "Repository-Sichtbarkeit konnte nicht aktualisiert werden")
+            raise GitHubApiError(f"GitHub API Fehler {response.status_code}: {message}")
+        return self._map_remote_repo(response.json())
+
     def resolve_remote_metadata(self, remote_url: str) -> tuple[str, int]:
         """
         Ermittelt Sichtbarkeit und Repository-ID fuer eine bekannte GitHub-Remote-URL.

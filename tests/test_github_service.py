@@ -36,12 +36,21 @@ class _DummySession:
 
         self.headers: dict[str, str] = {}
         self._responses = responses
+        self.patched_requests: list[tuple[str, dict]] = []
 
     def get(self, url: str, params=None, timeout: int = 0):  # noqa: ANN001
         """
         Liefert die naechste vorbereitete Antwort unabhaengig von URL oder Parametern.
         """
 
+        return self._responses.pop(0)
+
+    def patch(self, url: str, json=None, timeout: int = 0):  # noqa: ANN001
+        """
+        Liefert die naechste vorbereitete Antwort fuer PATCH-Aufrufe und merkt sich die Nutzlast.
+        """
+
+        self.patched_requests.append((url, json or {}))
         return self._responses.pop(0)
 
 
@@ -163,3 +172,43 @@ def test_fetch_remote_repositories_updates_authenticated_login() -> None:
 
     assert service.last_authenticated_login == "devdbzemusic"
     assert repositories[0].contributors_summary == "alice"
+
+
+def test_update_repository_visibility_uses_patch_and_maps_updated_repo() -> None:
+    """
+    Prueft, dass die Sichtbarkeitsaenderung per PATCH an GitHub gesendet und korrekt gemappt wird.
+    """
+
+    service = GitHubService(EnvSettings(github_access_token="token", github_app_client_id="", repo_dir=None))
+    dummy_session = _DummySession(
+        [
+            _DummyResponse(
+                200,
+                {
+                    "id": 7,
+                    "name": "demo",
+                    "full_name": "dbzs/demo",
+                    "owner": {"login": "dbzs"},
+                    "private": True,
+                    "default_branch": "main",
+                    "language": "Python",
+                    "archived": False,
+                    "fork": False,
+                    "clone_url": "https://github.com/dbzs/demo.git",
+                    "ssh_url": "git@github.com:dbzs/demo.git",
+                    "html_url": "https://github.com/dbzs/demo",
+                    "description": "Demo",
+                    "topics": [],
+                },
+            )
+        ]
+    )
+    service._session = dummy_session  # noqa: SLF001
+
+    repository = service.update_repository_visibility("dbzs", "demo", private=True)
+
+    assert dummy_session.patched_requests == [
+        ("https://api.github.com/repos/dbzs/demo", {"private": True})
+    ]
+    assert repository.visibility == "private"
+    assert repository.full_name == "dbzs/demo"

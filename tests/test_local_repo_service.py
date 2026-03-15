@@ -78,6 +78,32 @@ class DummyGitHubService:
         return "public", 42
 
 
+class DummyGitServiceWithoutRemote:
+    """Einfacher Test-Stub fuer ein lokales Repository ohne konfiguriertes Remote."""
+
+    def ensure_git_available(self) -> None:
+        """
+        Simuliert eine vorhandene Git-Installation.
+        """
+
+    def get_repo_details(self, repo_path: Path) -> dict[str, object]:
+        """
+        Liefert feste Testdaten fuer ein lokales Repository ohne Remote.
+        """
+
+        return {
+            "branch": "main",
+            "has_remote": False,
+            "remote_url": "",
+            "has_changes": False,
+            "untracked_count": 0,
+            "modified_count": 0,
+            "last_commit_hash": "abc1234",
+            "last_commit_date": "2026-03-12T10:00:00+00:00",
+            "last_commit_message": "Test Commit",
+        }
+
+
 def test_scan_repositories_finds_git_folder(tmp_path: Path) -> None:
     """
     Prueft die Erkennung eines lokalen Repositories ueber einen `.git`-Ordner.
@@ -139,3 +165,21 @@ def test_scan_repositories_sets_remote_visibility_when_github_metadata_exists(tm
     assert repositories[0].remote_visibility == "public"
     assert repositories[0].publish_as_public is True
     assert repositories[0].remote_repo_id == 42
+
+
+def test_scan_repositories_defaults_local_only_repositories_to_public(tmp_path: Path) -> None:
+    """
+    Prueft, dass lokale Repositories ohne Remote standardmaessig als public vorgemerkt sind.
+    """
+
+    repo_root = tmp_path / "demo_repo"
+    (repo_root / ".git").mkdir(parents=True)
+    (repo_root / "main.py").write_text("print('demo')", encoding="utf-8")
+
+    service = LocalRepoService(git_service=DummyGitServiceWithoutRemote())
+
+    repositories = service.scan_repositories(tmp_path)
+
+    assert repositories[0].has_remote is False
+    assert repositories[0].publish_as_public is True
+    assert repositories[0].remote_visibility == "not_published"

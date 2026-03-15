@@ -111,7 +111,7 @@ class RepoIndexService:
                     )
                 )
 
-            if self._repo_structure_service is not None and repository.id is not None:
+            if self._repo_structure_service is not None and repository.id is not None and repository.is_git_repo:
                 if self._logger is not None:
                     self._logger.event(
                         "scan",
@@ -127,6 +127,12 @@ class RepoIndexService:
                         created_at=self._utc_now(),
                     )
                 )
+            elif self._repo_structure_service is not None and repository.id is not None and self._logger is not None:
+                self._logger.event(
+                    "scan",
+                    "file_index_skipped",
+                    f"name={repository.name} | repo_id={repository.id} | reason=repository_is_not_valid_git_repo",
+                )
 
             indexed_repositories.append(repository)
             dir_names[:] = []
@@ -139,6 +145,89 @@ class RepoIndexService:
                 f"root_path={root_path} | repositories={len(indexed_repositories)}",
             )
         return indexed_repositories
+
+    def index_repository(self, repo_path: Path) -> RepositoryState | None:
+        """
+        Aktualisiert gezielt genau ein lokales Repository im State-Layer.
+
+        Eingabeparameter:
+        - repo_path: Vollstaendiger Pfad des lokalen Repositories.
+
+        Rueckgabewerte:
+        - Aktualisierter `RepositoryState` oder `None`, wenn der Pfad nicht existiert.
+
+        Moegliche Fehlerfaelle:
+        - Defekte Repositories werden als `BROKEN_GIT` persistiert statt den Aufrufer scheitern zu lassen.
+
+        Wichtige interne Logik:
+        - Die Methode wird fuer direkte UI-Reparaturen genutzt, damit die Tabelle nicht auf
+          einen spaeteren Komplettscan warten muss.
+        """
+
+        if not repo_path.exists():
+            if self._logger is not None:
+                self._logger.warning(f"Einzelne Repository-Aktualisierung uebersprungen, Pfad existiert nicht: {repo_path}")
+            return None
+
+        scan_timestamp = self._utc_now()
+        repository = self._inspect_repository(repo_path, scan_timestamp)
+        repository = self._state_repository.upsert_repository(repository)
+        self._state_repository.add_status_event(
+            RepoStatusEvent(
+                repo_id=int(repository.id or 0),
+                event_type="LOCAL_SCAN_COMPLETED",
+                message=f"Direkte Aktualisierung fuer '{repository.name}' abgeschlossen.",
+                created_at=scan_timestamp,
+            )
+        )
+
+        if self._remote_validation_service is not None and repository.has_remote:
+            if self._logger is not None:
+                self._logger.event(
+                    "scan",
+                    "remote_validation_begin",
+                    f"name={repository.name} | remote_url={repository.remote_url}",
+                )
+            repository = self._remote_validation_service.validate_repository(repository)
+            self._state_repository.add_status_event(
+                RepoStatusEvent(
+                    repo_id=int(repository.id or 0),
+                    event_type="REMOTE_VALIDATION_COMPLETED",
+                    message=f"Remote-Status: {repository.status}",
+                    created_at=self._utc_now(),
+                )
+            )
+
+        if self._repo_structure_service is not None and repository.id is not None and repository.is_git_repo:
+            if self._logger is not None:
+                self._logger.event(
+                    "scan",
+                    "file_index_begin",
+                    f"name={repository.name} | repo_id={repository.id} | local_path={repository.local_path}",
+                )
+            indexed_count = self._repo_structure_service.index_repository_files(int(repository.id), Path(repository.local_path))
+            self._state_repository.add_status_event(
+                RepoStatusEvent(
+                    repo_id=int(repository.id),
+                    event_type="FILE_INDEX_COMPLETED",
+                    message=f"{indexed_count} Dateien indexiert.",
+                    created_at=self._utc_now(),
+                )
+            )
+        elif self._repo_structure_service is not None and repository.id is not None and self._logger is not None:
+            self._logger.event(
+                "scan",
+                "file_index_skipped",
+                f"name={repository.name} | repo_id={repository.id} | reason=repository_is_not_valid_git_repo",
+            )
+
+        if self._logger is not None:
+            self._logger.event(
+                "scan",
+                "repo_index_single_complete",
+                f"repo_path={repo_path} | status={repository.status}",
+            )
+        return repository
 
     def _inspect_repository(self, repo_path: Path, scan_timestamp: str) -> RepositoryState:
         """

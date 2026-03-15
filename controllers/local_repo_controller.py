@@ -182,3 +182,88 @@ class LocalRepoController(QObject):
             rate_limit_text=rate_limit_text,
             target_dir_text=str(self._state.current_target_dir),
         )
+
+    def shutdown(self) -> None:
+        """
+        Wartet beim App-Shutdown auf einen eventuell noch laufenden lokalen Scan-Worker.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine; das Herunterfahren bleibt defensiv und blockiert nur kurz bis zum Thread-Ende.
+
+        Wichtige interne Logik:
+        - Verhindert den Qt-Absturz `QThread: Destroyed while thread is still running`.
+        """
+
+        if self._current_worker is not None and self._current_worker.isRunning():
+            self._logger.event("app", "shutdown_wait_for_local_scan_worker", level=20)
+            self._current_worker.wait()
+
+    def refresh_local_repository_entry(self, local_path: str) -> None:
+        """
+        Aktualisiert gezielt genau einen lokalen Eintrag in der Tabelle.
+
+        Eingabeparameter:
+        - local_path: Vollstaendiger Pfad des betroffenen Repositories.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Fehler bei Einzelaktualisierung werden geloggt und brechen die App nicht ab.
+
+        Wichtige interne Logik:
+        - Reparatur- und Push-Aktionen koennen dadurch den sichtbaren Eintrag sofort
+          nachziehen, ohne einen kompletten Root-Scan abzuwarten.
+        """
+
+        try:
+            self._logger.event("scan", "local_entry_refresh_requested", f"local_path={local_path}")
+            previous_repository = None
+            for candidate in self._window.get_local_repositories():
+                if candidate.full_path == local_path:
+                    previous_repository = candidate
+                    break
+            repository = self._local_repo_service.refresh_repository(Path(local_path))
+            if repository is None:
+                self._logger.warning(f"Lokaler Eintrag konnte nicht aktualisiert werden: {local_path}")
+                return
+            self._window.upsert_local_repository(repository)
+            self._state.local_repo_count = len(self._window.get_local_repositories())
+            self._window.update_status(self._build_status_snapshot())
+            self._window.local_repo_selected.emit(
+                {
+                    "repo_name": repository.name,
+                    "local_path": repository.full_path,
+                    "remote_repo_id": repository.remote_repo_id,
+                    "remote_url": repository.remote_url,
+                }
+            )
+            if previous_repository is not None:
+                self._logger.event(
+                    "state",
+                    "local_entry_updated",
+                    (
+                        f"repo_name={repository.name} | local_path={repository.full_path} | "
+                        f"status={previous_repository.remote_status}->{repository.remote_status} | "
+                        f"online={previous_repository.remote_exists_online}->{repository.remote_exists_online} | "
+                        f"action={previous_repository.recommended_action}->{repository.recommended_action} | "
+                        f"has_remote={previous_repository.has_remote}->{repository.has_remote}"
+                    ),
+                    level=20,
+                )
+            else:
+                self._logger.event(
+                    "state",
+                    "local_entry_added_via_refresh",
+                    f"repo_name={repository.name} | local_path={repository.full_path} | status={repository.remote_status}",
+                    level=20,
+                )
+            self._logger.info(f"Lokaler Eintrag fuer '{repository.name}' wurde aktualisiert.")
+        except Exception as error:  # noqa: BLE001
+            self._logger.exception(f"Direkte Aktualisierung des lokalen Eintrags fehlgeschlagen: {error}")

@@ -10,6 +10,7 @@ from models.state_models import RepositoryState
 from services.git_service import GitService
 from services.github_service import GitHubService
 from services.repo_index_service import RepoIndexService
+from services.state_db import compute_repository_status
 
 
 class LocalRepoService:
@@ -108,7 +109,7 @@ class LocalRepoService:
                     last_commit_date=str(details["last_commit_date"]),
                     last_commit_message=str(details["last_commit_message"]),
                     remote_visibility=remote_visibility,
-                    publish_as_public=(remote_visibility == "public"),
+                    publish_as_public=(not bool(details["has_remote"]) or remote_visibility == "public"),
                     remote_repo_id=remote_repo_id,
                     language_guess=self._guess_language(repo_path),
                 )
@@ -119,6 +120,73 @@ class LocalRepoService:
         if self._logger is not None:
             self._logger.event("scan", "local_scan_complete", f"root_path={root_path} | repositories={len(repositories)}")
         return repositories
+
+    def refresh_repository(self, repo_path: Path) -> LocalRepo | None:
+        """
+        Aktualisiert gezielt genau ein lokales Repository fuer die Tabellenanzeige.
+
+        Eingabeparameter:
+        - repo_path: Vollstaendiger Pfad des zu aktualisierenden Repositories.
+
+        Rueckgabewerte:
+        - Aktualisiertes `LocalRepo` oder `None`, wenn der Pfad nicht mehr existiert.
+
+        Moegliche Fehlerfaelle:
+        - Git- oder GitHub-Probleme werden wie beim normalen Scan defensiv behandelt.
+
+        Wichtige interne Logik:
+        - Die Methode ist fuer direkte Reparaturpfade gedacht, damit ein einzelner Eintrag
+          ohne kompletten Root-Scan aktualisiert werden kann.
+        """
+
+        if self._logger is not None:
+            self._logger.event("scan", "local_single_refresh_begin", f"repo_path={repo_path}")
+        self._git_service.ensure_git_available()
+        if not repo_path.exists():
+            if self._logger is not None:
+                self._logger.warning(f"Einzelaktualisierung uebersprungen, Pfad existiert nicht: {repo_path}")
+            return None
+
+        if self._repo_index_service is not None:
+            repository_state = self._repo_index_service.index_repository(repo_path)
+            if repository_state is None:
+                return None
+            mapped_repository = self._map_state_to_local_repo(repository_state)
+            if self._logger is not None:
+                self._logger.event(
+                    "scan",
+                    "local_single_refresh_complete",
+                    f"repo_path={repo_path} | status={mapped_repository.remote_status}",
+                )
+            return mapped_repository
+
+        details = self._git_service.get_repo_details(repo_path)
+        remote_visibility, remote_repo_id = self._resolve_remote_visibility(str(details["remote_url"]))
+        repository = LocalRepo(
+            name=repo_path.name,
+            full_path=str(repo_path),
+            current_branch=str(details["branch"]),
+            has_remote=bool(details["has_remote"]),
+            remote_url=str(details["remote_url"]),
+            has_changes=bool(details["has_changes"]),
+            untracked_count=int(details["untracked_count"]),
+            modified_count=int(details["modified_count"]),
+            last_commit_hash=str(details["last_commit_hash"]),
+            last_commit_date=str(details["last_commit_date"]),
+            last_commit_message=str(details["last_commit_message"]),
+            remote_visibility=remote_visibility,
+            publish_as_public=(not bool(details["has_remote"]) or remote_visibility == "public"),
+            remote_repo_id=remote_repo_id,
+            language_guess=self._guess_language(repo_path),
+            remote_status=compute_repository_status(True, bool(details["has_remote"]), None),
+        )
+        if self._logger is not None:
+            self._logger.event(
+                "scan",
+                "local_single_refresh_complete",
+                f"repo_path={repo_path} | status={repository.remote_status}",
+            )
+        return repository
 
     def _map_state_to_local_repo(self, repository: RepositoryState) -> LocalRepo:
         """
@@ -165,7 +233,7 @@ class LocalRepoService:
             last_commit_date=repository.head_commit_date or "-",
             last_commit_message=str(repo_details.get("last_commit_message", "-")),
             remote_visibility=repository.remote_visibility,
-            publish_as_public=(repository.remote_visibility == "public"),
+            publish_as_public=(not repository.has_remote or repository.remote_visibility == "public"),
             remote_repo_id=remote_repo_id,
             language_guess=self._guess_language(Path(repository.local_path)),
             state_repo_id=int(repository.id or 0),

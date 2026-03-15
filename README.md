@@ -7,6 +7,7 @@ iGitty ist eine Windows-first Desktop-Anwendung auf Basis von PySide6 zum Verwal
 MVP Teil 1 ist umgesetzt und um einen persistenten lokalen State-Layer erweitert:
 
 - Remote-GitHub-Repositories laden und anzeigen
+- Sichtbarkeit bestehender Remote-Repositories direkt in der Remote-Liste umschalten
 - Lokale Git-Repositories scannen und anzeigen
 - Ausgewaehlte Remote-Repositories lokal klonen
 - Ausgewaehlte lokale Repositories committen
@@ -53,11 +54,21 @@ Im Diagnosefenster sieht man fuer das aktuell ausgewaehlte Repository:
 - Remote- und Online-Zustand
 - letzte lokale Scan- und Remote-Check-Zeit
 - die juengsten `repo_status_events`
+- ein Live-Log-Feld, das die zentrale `logs/log.txt` mit Auto-Refresh spiegelt
 
 Zusaetzlich zeigt das Diagnosefenster einen Bereich `Job-Historie`:
 
 - die juengsten Clone-, Commit-, Push-, Delete- und Struktur-Aktionen
 - die kombinierte Sicht aus `clone_history` und `action_history`
+
+## Remote-Tabelle
+
+In der Remote-Liste kann die Sichtbarkeit eines Eintrags jetzt direkt ueber das Kontextmenue der Zeile geaendert werden:
+
+- `Auf private setzen`
+- `Auf public setzen`
+
+Nach erfolgreicher GitHub-Aktualisierung wird nur der betroffene Tabellen-Eintrag neu aufgebaut, damit die Liste sichtbar konsistent bleibt und das Logging den Sichtbarkeitswechsel dokumentiert.
 
 ## Logging
 
@@ -103,7 +114,7 @@ python main.py
 
 ```powershell
 python -m compileall core controllers db models services ui tests
-python -m pytest tests/test_masking.py tests/test_init_db.py tests/test_local_repo_service.py tests/test_clone_service.py tests/test_push_service.py tests/test_delete_service.py tests/test_repo_struct_service.py tests/test_repo_context_service.py tests/test_state_services.py tests/test_state_view_service.py tests/test_github_service.py
+python -m pytest tests/test_masking.py tests/test_init_db.py tests/test_local_repo_service.py tests/test_clone_service.py tests/test_push_service.py tests/test_delete_service.py tests/test_repo_struct_service.py tests/test_repo_context_service.py tests/test_state_services.py tests/test_state_view_service.py tests/test_github_service.py tests/test_remote_visibility_service.py
 ```
 
 ## Architekturhinweise

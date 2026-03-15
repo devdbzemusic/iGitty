@@ -65,11 +65,19 @@ class DummyRemoteValidationService:
 class DummyRepoStructureService:
     """Simuliert eine erfolgreiche Dateiindexierung."""
 
+    def __init__(self) -> None:
+        """
+        Initialisiert einen einfachen Aufrufzaehler fuer Assertions.
+        """
+
+        self.calls = 0
+
     def index_repository_files(self, repo_id: int, repo_path: Path) -> int:
         """
         Liefert eine feste Dateianzahl fuer Assertions.
         """
 
+        self.calls += 1
         return 2
 
 
@@ -349,3 +357,48 @@ def test_push_service_blocks_missing_remote_using_state_database(tmp_path: Path)
     assert results[0].status == "error"
     assert "Remote existiert online nicht mehr" in results[0].message
     assert git_service.pushes == []
+
+
+def test_repo_index_service_skips_file_index_for_broken_git_repositories(tmp_path: Path) -> None:
+    """
+    Prueft, dass defekte Repositories nicht zusaetzlich in die Dateiindexierung laufen.
+    """
+
+    class BrokenInspectorService:
+        """
+        Liefert einen Zustand, der kein gueltiges Git-Repository mehr darstellt.
+        """
+
+        def inspect_repository(self, repo_path: Path) -> dict[str, object]:
+            return {
+                "name": repo_path.name,
+                "local_path": str(repo_path),
+                "is_git_repo": False,
+                "branch": "",
+                "head_commit": "",
+                "head_commit_date": "",
+                "has_remote": False,
+                "remote_name": "",
+                "remote_url": "",
+                "remote_host": "",
+                "remote_owner": "",
+                "remote_repo_name": "",
+                "has_uncommitted_changes": False,
+            }
+
+    repo_root = tmp_path / "repos" / "broken_demo"
+    (repo_root / ".git").mkdir(parents=True)
+    paths = _build_runtime_paths(tmp_path)
+    repository = StateRepository(paths.state_db_file)
+    repo_structure_service = DummyRepoStructureService()
+    service = RepoIndexService(
+        state_repository=repository,
+        git_inspector_service=BrokenInspectorService(),
+        repo_structure_service=repo_structure_service,
+    )
+
+    results = service.scan_root(tmp_path / "repos")
+
+    assert len(results) == 1
+    assert results[0].status == "BROKEN_GIT"
+    assert repo_structure_service.calls == 0

@@ -21,6 +21,7 @@ from services.delete_service import DeleteService
 from services.github_service import GitHubService
 from services.local_repo_service import LocalRepoService
 from services.push_service import PushService
+from services.remote_visibility_service import RemoteVisibilityService
 from services.job_history_view_service import JobHistoryViewService
 from services.repo_context_service import RepoContextService
 from services.repo_index_service import RepoIndexService
@@ -77,6 +78,7 @@ class MainController:
         self._logger.subscribe(self._window.append_log_line)
         self._logger.event("app", "main_controller_initialized", f"target_dir={config.default_repo_dir}")
         self._window.set_target_directory(str(config.default_repo_dir))
+        self._window.set_live_log_file(paths.log_file)
         self._window.target_directory_change_requested.connect(self._change_target_directory)
         self._window.remote_repo_open_requested.connect(self.open_repo_context)
         self._window.local_repo_open_requested.connect(self.open_repo_context)
@@ -102,6 +104,7 @@ class MainController:
         commit_service = CommitService(git_service=git_service)
         push_service = PushService(git_service=git_service, github_service=github_service, state_repository=self._state_repository)
         delete_service = DeleteService(github_service=github_service)
+        remote_visibility_service = RemoteVisibilityService(github_service=github_service)
         local_repo_service = LocalRepoService(
             git_service=git_service,
             github_service=github_service,
@@ -121,6 +124,7 @@ class MainController:
             window=window,
             github_service=github_service,
             clone_service=clone_service,
+            remote_visibility_service=remote_visibility_service,
             state=self._state,
             logger=logger,
             job_log_repository=job_log_repository,
@@ -140,12 +144,15 @@ class MainController:
             git_service=git_service,
             repo_struct_service=repo_struct_service,
             job_log_repository=job_log_repository,
+            logger=logger,
             post_action_refresh_callback=self._scan_local_after_clone,
+            post_single_repo_refresh_callback=self._local_repo_controller.refresh_local_repository_entry,
         )
         self._delete_controller = DeleteController(
             window=window,
             delete_service=delete_service,
             job_log_repository=job_log_repository,
+            logger=logger,
             post_delete_callback=self._remote_repo_controller.load_remote_repositories,
         )
 
@@ -290,3 +297,34 @@ class MainController:
         self._window.set_target_directory(new_directory)
         self._window.update_status(self._build_status_snapshot())
         self._logger.info(f"Zielordner auf '{new_directory}' gesetzt.")
+
+    def shutdown(self) -> None:
+        """
+        Fuehrt einen geordneten Shutdown aller bekannten Hintergrund-Controller aus.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Einzelne Shutdown-Fehler werden protokolliert, sollen aber den Gesamt-Shutdown nicht blockieren.
+
+        Wichtige interne Logik:
+        - Zentralisiert das Warten auf Worker-Threads, damit `QThread`-Objekte nicht mehr
+          waehrend laufender Arbeit von Qt zerstoert werden.
+        """
+
+        self._logger.event("app", "controller_shutdown_begin", level=20)
+        for controller_name, controller in (
+            ("action_controller", self._action_controller),
+            ("delete_controller", self._delete_controller),
+            ("local_repo_controller", self._local_repo_controller),
+            ("remote_repo_controller", self._remote_repo_controller),
+        ):
+            try:
+                controller.shutdown()
+            except Exception as error:  # noqa: BLE001
+                self._logger.exception(f"Shutdown von {controller_name} fehlgeschlagen: {error}")
+        self._logger.event("app", "controller_shutdown_complete", level=20)

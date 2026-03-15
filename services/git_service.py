@@ -501,9 +501,16 @@ class GitService:
             return completed.stdout
         except (subprocess.CalledProcessError, FileNotFoundError) as error:
             if self._logger is not None:
-                self._logger.warning(
-                    f"Git-Kommando fehlgeschlagen fuer '{repo_path}' mit args={' '.join(arguments)}: {error}"
-                )
+                if allow_failure:
+                    self._logger.event(
+                        "git",
+                        "command_expected_failure",
+                        f"repo_path={repo_path} | args={' '.join(arguments)} | error={error}",
+                    )
+                else:
+                    self._logger.warning(
+                        f"Git-Kommando fehlgeschlagen fuer '{repo_path}' mit args={' '.join(arguments)}: {error}"
+                    )
             if allow_failure:
                 return ""
             raise IGittyError(f"Git-Abfrage fuer '{repo_path}' fehlgeschlagen: {error}") from error

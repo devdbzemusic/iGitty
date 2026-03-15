@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
+from core.logger import AppLogger
 from db.job_log_repository import JobLogRepository
 from models.job_models import JobLogEntry
 from services.delete_service import DeleteService
@@ -16,7 +17,14 @@ from ui.workers.delete_worker import DeleteWorker
 class DeleteController:
     """Koordiniert die Sicherheitslogik vor einem Remote-Delete."""
 
-    def __init__(self, window: MainWindow, delete_service: DeleteService, job_log_repository: JobLogRepository, post_delete_callback=None) -> None:
+    def __init__(
+        self,
+        window: MainWindow,
+        delete_service: DeleteService,
+        job_log_repository: JobLogRepository,
+        logger: AppLogger,
+        post_delete_callback=None,
+    ) -> None:
         """
         Verdrahtet den Delete-Button mit Clone-Nachweis und Bestaetigungsdialog.
         """
@@ -24,6 +32,7 @@ class DeleteController:
         self._window = window
         self._delete_service = delete_service
         self._job_log_repository = job_log_repository
+        self._logger = logger
         self._post_delete_callback = post_delete_callback
         self._worker: DeleteWorker | None = None
         self._window.delete_remote_requested.connect(self.delete_selected_remote_repositories)
@@ -99,3 +108,24 @@ class DeleteController:
 
         self._window.set_delete_loading(False)
         self._window.append_log_line(f"Fehler: {error_message}")
+
+    def shutdown(self) -> None:
+        """
+        Wartet beim App-Shutdown auf einen eventuell noch laufenden Delete-Worker.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Verhindert, dass ein laufender Delete-Thread beim Schliessen der App hart zerstoert wird.
+        """
+
+        if self._worker is not None and self._worker.isRunning():
+            self._logger.event("app", "shutdown_wait_for_delete_worker", level=20)
+            self._worker.wait()

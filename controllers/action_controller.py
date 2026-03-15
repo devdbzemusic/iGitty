@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from PySide6.QtWidgets import QMessageBox
 
+from core.logger import AppLogger
 from db.job_log_repository import JobLogRepository
 from models.job_models import ActionRecord, JobLogEntry
 from services.commit_service import CommitService
@@ -32,7 +33,9 @@ class ActionController:
         git_service: GitService,
         repo_struct_service: RepoStructService,
         job_log_repository: JobLogRepository,
+        logger: AppLogger,
         post_action_refresh_callback=None,
+        post_single_repo_refresh_callback=None,
     ) -> None:
         """
         Verdrahtet lokale Buttons mit den zugehoerigen Batch-Workflows.
@@ -44,7 +47,9 @@ class ActionController:
         self._git_service = git_service
         self._repo_struct_service = repo_struct_service
         self._job_log_repository = job_log_repository
+        self._logger = logger
         self._post_action_refresh_callback = post_action_refresh_callback
+        self._post_single_repo_refresh_callback = post_single_repo_refresh_callback
         self._commit_worker: CommitWorker | None = None
         self._push_worker: PushWorker | None = None
         self._struct_worker: StructScanWorker | None = None
@@ -96,7 +101,7 @@ class ActionController:
         if create_remote:
             dialog = CreateRemoteDialog(
                 repositories[0].name,
-                initial_private=not repositories[0].publish_as_public,
+                initial_private=False,
                 parent=self._window,
             )
             if dialog.exec() == 0:
@@ -158,6 +163,14 @@ class ActionController:
             )
             self._window.append_log_line(f"{result.action_type} {result.repo_name}: {result.status} - {result.message}")
 
+        if callable(self._post_single_repo_refresh_callback):
+            refreshed_paths: set[str] = set()
+            for result in results:
+                if not result.local_path or result.local_path in refreshed_paths:
+                    continue
+                self._post_single_repo_refresh_callback(result.local_path)
+                refreshed_paths.add(result.local_path)
+
         if callable(self._post_action_refresh_callback):
             self._post_action_refresh_callback()
 
@@ -192,6 +205,12 @@ class ActionController:
             self._window.append_log_line("Kontextaktion konnte keinem lokalen Repository zugeordnet werden.")
             return
 
+        self._logger.event(
+            "action",
+            "local_context_action_requested",
+            f"repo_name={repository.name} | local_path={repository.full_path} | action={action_name}",
+            level=20,
+        )
         try:
             if action_name == "remove_remote":
                 self._push_service.remove_remote_and_keep_local(repository)
@@ -202,7 +221,7 @@ class ActionController:
             elif action_name in {"repair_remote", "create_remote"}:
                 dialog = CreateRemoteDialog(
                     repository.name,
-                    initial_private=not repository.publish_as_public,
+                    initial_private=False,
                     parent=self._window,
                 )
                 if dialog.exec() == 0:
@@ -230,9 +249,14 @@ class ActionController:
                 self._window.append_log_line(f"Unbekannte Kontextaktion: {action_name}")
                 return
         except Exception as error:  # noqa: BLE001
+            self._logger.exception(
+                f"Kontextaktion fehlgeschlagen fuer '{repository.name}' (action={action_name}): {error}"
+            )
             self._window.append_log_line(f"Fehler bei Kontextaktion '{action_name}': {error}")
             return
 
+        if callable(self._post_single_repo_refresh_callback):
+            self._post_single_repo_refresh_callback(repository.full_path)
         if callable(self._post_action_refresh_callback):
             self._post_action_refresh_callback()
 
@@ -333,3 +357,30 @@ class ActionController:
 
         self._window.set_struct_scan_loading(False)
         self._window.append_log_line(f"Fehler: {error_message}")
+
+    def shutdown(self) -> None:
+        """
+        Wartet beim App-Shutdown auf eventuell noch laufende Aktions-Worker.
+
+        Eingabeparameter:
+        - Keine.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine; die Methode ist bewusst defensiv.
+
+        Wichtige interne Logik:
+        - So wird verhindert, dass Commit-, Push- oder Struktur-Threads von Qt zu frueh
+          zerstoert werden.
+        """
+
+        for worker_name, worker in (
+            ("commit", self._commit_worker),
+            ("push", self._push_worker),
+            ("struct_scan", self._struct_worker),
+        ):
+            if worker is not None and worker.isRunning():
+                self._logger.event("app", f"shutdown_wait_for_{worker_name}_worker", level=20)
+                worker.wait()

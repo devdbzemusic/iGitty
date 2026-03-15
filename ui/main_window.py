@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -40,6 +42,7 @@ class MainWindow(QMainWindow):
     delete_remote_requested = Signal()
     struct_scan_requested = Signal()
     remote_repo_open_requested = Signal(object, str)
+    remote_repo_action_requested = Signal(object, str)
     local_repo_open_requested = Signal(object, str)
     local_repo_action_requested = Signal(object, str)
     local_repo_selected = Signal(object)
@@ -205,6 +208,7 @@ class MainWindow(QMainWindow):
         self._remote_table.filter_text_changed.connect(self.remote_filter_changed.emit)
         self._local_table.filter_text_changed.connect(self.local_filter_changed.emit)
         self._remote_table.row_activated.connect(self._open_remote_row)
+        self._remote_table.row_context_requested.connect(self._show_remote_context_menu)
         self._local_table.row_activated.connect(self._open_local_row)
         self._local_table.row_context_requested.connect(self._show_local_context_menu)
         self._local_table.row_selected.connect(self._select_local_row)
@@ -413,6 +417,25 @@ class MainWindow(QMainWindow):
 
         self._path_selector.set_path(path_text)
 
+    def set_live_log_file(self, log_file: Path) -> None:
+        """
+        Uebergibt den Pfad der zentralen `log.txt` an das Diagnosefenster.
+
+        Eingabeparameter:
+        - log_file: Vollstaendiger Dateipfad der Laufzeit-Logdatei.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine.
+
+        Wichtige interne Logik:
+        - Das Hauptfenster bleibt reine Durchreiche und haelt keine eigene Dateilogik.
+        """
+
+        self._diagnostics_window.set_live_log_file(log_file)
+
     def set_remote_loading(self, is_loading: bool) -> None:
         """
         Aktiviert oder deaktiviert die Remote-Ladeaktion im UI.
@@ -590,6 +613,61 @@ class MainWindow(QMainWindow):
 
         self._scan_local_button.setEnabled(not is_loading)
         self._scan_local_button.setText("Scanne..." if is_loading else "Lokale Repos scannen")
+
+    def upsert_local_repository(self, repository: LocalRepo) -> None:
+        """
+        Ersetzt oder ergaenzt genau einen lokalen Repository-Eintrag in der aktuellen Tabelle.
+
+        Eingabeparameter:
+        - repository: Neu eingelesener Zustand des lokalen Repositories.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine; unbekannte Eintraege werden einfach neu aufgenommen.
+
+        Wichtige interne Logik:
+        - Die Tabelle wird aus einer konsistenten Liste neu aufgebaut, damit alle
+          Statusspalten zusammen aktualisiert werden.
+        """
+
+        repositories = list(self._local_repositories)
+        for index, current_repository in enumerate(repositories):
+            if current_repository.full_path == repository.full_path:
+                repositories[index] = repository
+                break
+        else:
+            repositories.append(repository)
+        repositories.sort(key=lambda item: item.name.lower())
+        self.populate_local_repositories(repositories)
+
+    def upsert_remote_repository(self, repository: RemoteRepo) -> None:
+        """
+        Ersetzt oder ergaenzt genau einen Remote-Repository-Eintrag in der aktuellen Tabelle.
+
+        Eingabeparameter:
+        - repository: Neu geladener Zustand des Remote-Repositories.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Keine; unbekannte Eintraege werden einfach neu aufgenommen.
+
+        Wichtige interne Logik:
+        - Der gezielte Neuaufbau der Remote-Liste sorgt dafuer, dass Sichtbarkeit,
+          Tooltips und Sortierung gemeinsam aktualisiert werden.
+        """
+
+        repositories = list(self._remote_repositories)
+        for index, current_repository in enumerate(repositories):
+            if current_repository.repo_id == repository.repo_id:
+                repositories[index] = repository
+                break
+        else:
+            repositories.append(repository)
+        self.populate_remote_repositories(repositories)
 
     def _choose_target_directory(self) -> None:
         """
@@ -952,3 +1030,50 @@ class MainWindow(QMainWindow):
             self.local_repo_action_requested.emit(repo_ref, "create_remote")
         elif selected_action == reinitialize_action:
             self.local_repo_action_requested.emit(repo_ref, "reinitialize_repository")
+
+    def _show_remote_context_menu(self, row_index: int) -> None:
+        """
+        Baut das Kontextmenue fuer eine Remote-Zeile und emittiert Sichtbarkeitsaktionen.
+
+        Eingabeparameter:
+        - row_index: Aktivierte Tabellenzeile.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Ungueltige Zeilen werden ignoriert.
+
+        Wichtige interne Logik:
+        - Die UI zeigt nur die fachlich sinnvolle Umschaltaktion fuer den aktuellen
+          Sichtbarkeitszustand an und ueberlaesst die eigentliche Aenderung dem Controller.
+        """
+
+        if not (0 <= row_index < len(self._remote_repositories)):
+            return
+
+        repository = self._remote_repositories[row_index]
+        repo_ref = {
+            "repo_id": repository.repo_id,
+            "repo_name": repository.name,
+            "repo_owner": repository.owner,
+            "remote_url": repository.html_url,
+            "visibility": repository.visibility,
+        }
+
+        menu = QMenu(self)
+        current_visibility_action = menu.addAction(f"Aktuell: {repository.visibility}")
+        current_visibility_action.setEnabled(False)
+        menu.addSeparator()
+
+        toggle_action = None
+        if repository.visibility == "public":
+            toggle_action = menu.addAction("Auf private setzen")
+        elif repository.visibility == "private":
+            toggle_action = menu.addAction("Auf public setzen")
+
+        selected_action = menu.exec(self.cursor().pos())
+        if selected_action == toggle_action and repository.visibility == "public":
+            self.remote_repo_action_requested.emit(repo_ref, "set_private")
+        elif selected_action == toggle_action and repository.visibility == "private":
+            self.remote_repo_action_requested.emit(repo_ref, "set_public")

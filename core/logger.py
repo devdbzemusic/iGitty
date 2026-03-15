@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from pathlib import Path
+from types import TracebackType
 from typing import Callable
 
 
@@ -162,6 +164,56 @@ class AppLogger:
 
         self._logger.exception(message)
         self._notify_listeners(logging.ERROR, message)
+
+    def log_exception_details(
+        self,
+        message: str,
+        exc_type: type[BaseException],
+        exc_value: BaseException,
+        exc_traceback: TracebackType | None,
+    ) -> None:
+        """
+        Schreibt eine explizit uebergebene Ausnahme inklusive Traceback in die Logdatei.
+
+        Eingabeparameter:
+        - message: Fachlicher Kontext fuer die Ausnahme.
+        - exc_type: Konkreter Ausnahmetyp.
+        - exc_value: Ausgeloeste Ausnahmeinstanz.
+        - exc_traceback: Zugehoeriger Traceback oder `None`.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Listener koennen scheitern; der Dateieintrag bleibt trotzdem erhalten.
+
+        Wichtige interne Logik:
+        - Diese Methode wird fuer globale Hooks wie `sys.excepthook` benoetigt, weil dort
+          keine aktive Exception mehr im klassischen `except`-Kontext vorhanden ist.
+        """
+
+        self._logger.error(message, exc_info=(exc_type, exc_value, exc_traceback))
+        self._notify_listeners(logging.ERROR, f"{message}: {exc_value}")
+
+    def critical(self, message: str) -> None:
+        """
+        Schreibt eine kritische Meldung in Datei und UI.
+
+        Eingabeparameter:
+        - message: Aufbereitete kritische Meldung.
+
+        Rueckgabewerte:
+        - Keine.
+
+        Moegliche Fehlerfaelle:
+        - Listenerfehler werden abgefangen.
+
+        Wichtige interne Logik:
+        - Kritische Eintraege markieren Situationen, die typischerweise mit einem
+          App-Absturz oder unmittelbar bevorstehendem Abbruch zusammenhaengen.
+        """
+
+        self._log(logging.CRITICAL, message)
 
     def event(self, category: str, action: str, details: str = "", level: int = logging.DEBUG) -> None:
         """
